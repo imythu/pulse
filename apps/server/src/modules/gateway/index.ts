@@ -15,8 +15,10 @@ import { verifyEd25519 } from '../../lib/crypto.js';
 import { unauthorized } from '../../lib/http-error.js';
 import type { LiveBus } from '../../lib/live.js';
 import { audit } from '../auth/index.js';
-import { isUuid, toSummary, type HostRow } from '../hosts/repo.js';
+import type { AlertEngine } from '../alerting/engine.js';
+import { hostCtx, isUuid, toSummary, type HostRow } from '../hosts/repo.js';
 import { ingestMetrics, ingestProcs, toLiveSeries } from '../ingest/index.js';
+import { ingestLogs } from '../logs/ingest.js';
 
 const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 
@@ -62,8 +64,14 @@ export class Gateway {
     private readonly sql: Sql,
     private readonly live: LiveBus,
     private readonly log: FastifyBaseLogger,
+    private readonly engine: AlertEngine,
     private readonly opts: GatewayOptions,
   ) {}
+
+  /** 告警处理是异步排队的，失败只记日志，不影响 Agent 消息的确认。 */
+  private signal(p: Promise<void>) {
+    p.catch((err) => this.log.error({ err }, '告警处理失败'));
+  }
 
   register(app: FastifyInstance) {
     app.get(
@@ -136,6 +144,7 @@ export class Gateway {
     }
     if (host.prev_status !== 'online') {
       this.live.publish({ channel: 'overview', type: 'host.status', host: toSummary(host), at: Date.now() });
+      this.signal(this.engine.onHostStatus(hostCtx(host), 'online'));
     }
 
     if (msg.type === 'hello') {
@@ -167,6 +176,10 @@ export class Gateway {
         windowStart: msg.payload.windowStart,
         series: toLiveSeries(msg.payload),
       });
+      this.signal(this.engine.onMetrics(hostCtx(host), msg.payload));
+    } else if (msg.type === 'logs') {
+      if (msg.payload.dropped > 0) this.log.warn({ hostId, dropped: msg.payload.dropped }, 'Agent 日志窗口内指纹过多，部分记录只计数');
+      this.signal(this.engine.onLogSignals(await ingestLogs(this.sql, hostCtx(host), msg.payload)));
     } else if (msg.type === 'procs') {
       const procs = await ingestProcs(this.sql, hostId, msg.payload, msg.ts);
       this.live.publish({ channel: `host:${hostId}`, type: 'procs', hostId, procs });
@@ -202,5 +215,6 @@ export class Gateway {
 
   private publishStatus(row: HostRow) {
     this.live.publish({ channel: 'overview', type: 'host.status', host: toSummary(row), at: Date.now() });
+    if (row.status === 'offline') this.signal(this.engine.onHostStatus(hostCtx(row), 'offline'));
   }
 }

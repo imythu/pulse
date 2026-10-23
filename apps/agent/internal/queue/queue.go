@@ -18,6 +18,9 @@ var (
 	keySeq     = []byte("seq")
 )
 
+// TypeLogs 与 protocol.TypeLogs 相同；队列不依赖 protocol 包，这里单独声明
+const TypeLogs = "logs"
+
 type Message struct {
 	Seq  int64
 	Type string
@@ -86,19 +89,47 @@ func (q *Queue) Push(typ string, build func(seq int64) ([]byte, error)) (Message
 		}
 		q.bytes += int64(len(data) + len(typ) + 1)
 		q.count++
-		// 容量满了丢最旧的，保证新数据能写入
-		c := b.Cursor()
-		for k, v := c.First(); k != nil && q.bytes > q.maxBytes && q.count > 1; k, v = c.First() {
-			q.bytes -= int64(len(v))
-			q.count--
-			if err := c.Delete(); err != nil {
-				return err
-			}
+		if err := q.evict(b, seq); err != nil {
+			return err
 		}
 		msg = Message{Seq: seq, Type: typ, Data: data}
 		return nil
 	})
 	return msg, err
+}
+
+// evict 在超出容量时腾出空间：先丢最旧的指标等消息，异常日志最后才丢（设计文档 3.4）。
+// 刚写入的 keep 这条永远保留。
+func (q *Queue) evict(b *bolt.Bucket, keep int64) error {
+	if q.bytes <= q.maxBytes {
+		return nil
+	}
+	for _, spareLogs := range []bool{true, false} {
+		var victims [][]byte
+		over := q.bytes - q.maxBytes
+		c := b.Cursor()
+		for k, v := c.First(); k != nil && over > 0; k, v = c.Next() {
+			if int64(binary.BigEndian.Uint64(k)) == keep {
+				continue
+			}
+			if typ, _, _ := decode(v); spareLogs && typ == TypeLogs {
+				continue
+			}
+			victims = append(victims, append([]byte(nil), k...))
+			over -= int64(len(v))
+		}
+		for _, k := range victims {
+			q.bytes -= int64(len(b.Get(k)))
+			q.count--
+			if err := b.Delete(k); err != nil {
+				return err
+			}
+		}
+		if q.bytes <= q.maxBytes {
+			return nil
+		}
+	}
+	return nil
 }
 
 // Ack 删除 seq <= maxSeq 的所有消息。

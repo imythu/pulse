@@ -44,6 +44,15 @@ if [ ! -f /etc/pulse/agent.yaml ]; then
 server: $SERVER
 data_dir: /var/lib/pulse-agent
 labels: {}
+# 异常日志采集：journald 默认开启；应用日志文件按下面的格式添加
+# logs:
+#   files:
+#     - service: order-api
+#       paths: [/var/log/order-api/*.log]
+#       format: auto        # auto | plain | json | docker
+#   journald:
+#     enabled: true
+#     units: []           # 为空表示全部
 EOF
 fi
 

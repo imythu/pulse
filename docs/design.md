@@ -155,7 +155,7 @@ Agent 内嵌 goja JS 引擎，运行服务器下发、已签名的监控脚本�
 **两级计数**：
 
 - Agent：10 秒窗口内同一指纹只发首条完整样本，其余只累加 `count`、更新 `last_seen`。一分钟刷屏 10 万次的同一报错，上报量是 6 条。
-- 服务器：按指纹维护 LogGroup（first_seen、last_seen、total_count、每分钟计数序列、最近 20 条样本、影响的主机列表）。实时计数放 Redis，每分钟落库。
+- 服务器：按指纹维护 LogGroup（first_seen、last_seen、total_count、每分钟计数序列、首条 + 最近 20 条样本、影响的主机列表）。服务器用同一套规则重新计算指纹，以服务器结果为准；同一指纹每 30 秒最多存一条样本。计数直接写 `log_counts`（每分钟一行，upsert 累加）。
 
 **什么时候触发告警**（只有下列情况生成 Alert，其余只累加计数）：
 
@@ -182,7 +182,9 @@ CPU、内存等指标每 10 秒一个点，不能每个超阈值的点都变成�
 内存默认 90% / 3 分钟 / 85%，磁盘默认 85% / 0 / 80%。另加两类非阈值规则：
 
 - **趋势**：磁盘按最近 6 小时线性外推，预计 24 小时内写满即告警；内存连续 2 小时单调上涨且增幅 > 20% 标记“疑似泄漏”。
-- **异常偏离**：与自身 7 天同时段基线比较，偏离超过 3 倍标准差且持续 10 分钟。适合平时只有 20% 却突然到 60% 的机器。
+- **异常偏离**（M2 未实现，后续补充）：与自身 7 天同时段基线比较，偏离超过 3 倍标准差且持续 10 分钟。适合平时只有 20% 却突然到 60% 的机器。
+
+日志告警没有“持续”的概念：新指纹、复发时立即 firing，突增、扩散时升级为 critical，`quietMinutes`（默认 30 分钟）内不再出现即恢复。主机离线告警在离线检测判定时立即 firing，重新上线即恢复。
 
 ### 4.3 Alert 状态机
 
@@ -199,7 +201,12 @@ CPU、内存等指标每 10 秒一个点，不能每个超阈值的点都变成�
 | resolved | 30 分钟内再次触发 | firing（重开原 Alert，计入一次抖动） |
 | 任意 | 1 小时内抖动 ≥ 3 次 | flapping，暂停通知 1 小时，在 Incident 中提示“阈值可能不合理” |
 
-状态机在单个 Worker 中按 Alert 键串行处理（BullMQ group 或 Redis 锁），避免并发上报产生竞态。
+状态机在单个进程中经同一个串行队列处理，避免并发上报产生竞态；拆分多进程时改为按 Alert 键加 Redis 锁。实现细节：
+
+- pending 只保存在内存中（回落即丢弃，不留记录），服务器重启后重新计时。
+- flapping 不是单独的状态，而是 `flapping_until` 时间戳：抖动期间告警照常 firing / resolved，只是不发通知。
+- 合并规则的“5 分钟”指 Incident 的最近变化时间（告警加入、升级、重开），所以持续不断的告警风暴会合并到同一个 Incident，而几天后同一主机上的新问题会另开 Incident。
+- 只在 Incident 打开、严重度升级、重开、恢复时通知；同一 Incident 内新加入的同级告警不通知。
 
 ### 4.4 Incident 合并与分析冷却
 
@@ -226,8 +233,8 @@ CPU、内存等指标每 10 秒一个点，不能每个超阈值的点都变成�
 | 接口契约 | Zod，前后端与 Agent 协议共享 `packages/shared` | 一处定义，类型和运行时校验同源 |
 | 关系数据 | PostgreSQL 16 + postgres.js，手写 SQL 迁移 | TimescaleDB 的超表、连续聚合、压缩策略都要写原生 SQL，ORM 帮不上忙；查询类型由 `packages/shared` 的接口约束 |
 | 时序指标 | TimescaleDB 扩展（hypertable + 连续聚合 + 压缩） | 不引入第二个数据库，SQL 直接查 |
-| 缓存 / 计数 / 锁 | Redis 7 | 指纹计数、Alert 状态、Agent 在线表 |
-| 队列 | BullMQ | 重试、延迟任务（60 秒汇集窗口）、并发控制 |
+| 缓存 / 计数 / 锁 | Redis 7（拆分多进程时引入） | 指纹计数、Alert 锁、Agent 在线表。单进程部署时用进程内串行队列 + PostgreSQL，M2 未使用 Redis |
+| 队列 | BullMQ（M4 引入） | 重试、延迟任务（60 秒汇集窗口）、并发控制 |
 | 日志 | pino | 结构化日志，低开销 |
 | 测试 | Vitest + Testcontainers | 管线和状态机用真实 PG / Redis 测 |
 
@@ -469,7 +476,7 @@ Pulse 只支持 GitHub，认证完全交给服务器上的 `gh` 命令行：Puls
 
 ## 9. 数据模型与 API
 
-核心是 22 张表和三类接口：Agent 协议（WebSocket）、控制台 REST、控制台实时推送。所有消息和请求体都在 `packages/shared` 中用 Zod 定义。
+核心是 24 张表和三类接口：Agent 协议（WebSocket）、控制台 REST、控制台实时推送。所有消息和请求体都在 `packages/shared` 中用 Zod 定义。
 
 ### 9.1 数据表
 
@@ -481,11 +488,13 @@ Pulse 只支持 GitHub，认证完全交给服务器上的 `gh` 命令行：Puls
 | `agent_credentials` | host_id, public_key, cert_serial, revoked_at |
 | `metrics`（hypertable） | time, host_id, name, tag（挂载点、网卡等对象，主机级指标为空）, min, max, avg, p95；另有连续聚合 `metrics_1h` |
 | `log_groups` | id, service, fingerprint, level, template, first_seen, last_seen, total_count, hosts text[], status（active / ignored / resolved）, resolved_commit |
-| `log_samples` | id, log_group_id, host_id, time, message, stack, context |
+| `log_samples` | id, log_group_id, host_id, time, source, message（打码后的完整记录，含堆栈）, context |
 | `log_counts`（hypertable） | time, log_group_id, host_id, count |
-| `rules` | id, kind（threshold / trend / baseline / log）, metric, params jsonb, severity, scope（标签选择器）, enabled |
-| `alerts` | id, key, rule_id, host_id, log_group_id, state, severity, started_at, resolved_at, peak_value, flap_count, incident_id |
-| `incidents` | id, title, severity, status（open / analyzing / resolved）, service, host_ids, opened_at, resolved_at, last_analysis_id |
+| `rules` | id, kind（threshold / disk_fill / mem_leak / offline / log）, metric, params jsonb, severity, scope（标签选择器）, enabled；内置 8 条，只能修改参数、级别、范围和启停 |
+| `alerts` | id, key, rule_id, host_id, log_group_id, tag, state（firing / resolved）, severity, escalated, reasons, value, peak_value, threshold, count, started_at, last_seen_at, resolved_at, recover_since, flaps, flapping_until, incident_id |
+| `incident_events` | Incident 时间线：opened / alert_joined / alert_escalated / alert_resolved / alert_reopened / flapping / resolved / reopened / notified / notify_failed |
+| `notification_channels` | name, kind（feishu / wecom / dingtalk / slack / webhook）, url, secret, min_severity, enabled |
+| `incidents` | id, no（递增编号，便于口头沟通）, title, severity, status（open / analyzing / resolved）, service, host_ids, opened_at, resolved_at, last_analysis_id |
 | `analyses` | id, incident_id, provider, model, trigger（auto / escalation / manual）, status, steps jsonb, report jsonb, tokens_in, tokens_out, cost, commit_sha, started_at, finished_at |
 | `commands` | id, host_id, template, args jsonb, risk, requested_by（`user:<id>` / `analysis:<id>`）, approval_status, approved_by, status, exit_code, output, started_at, finished_at |
 | `repos` / `service_bindings` / `deploys` | 仓库（owner, name, default_branch, local_path, last_synced_at）、服务与仓库子目录的绑定、服务版本变化记录 |
@@ -813,7 +822,7 @@ pulse/
 
 ### 12.4 待确认问题
 
-- [ ] 需要支持哪些通知渠道，第一版做哪一个？
+- [x] 通知渠道：M2 已实现飞书、企业微信、钉钉、Slack 和通用 Webhook（带 HMAC 签名）。
 - [ ] 是否需要支持 Windows 主机和 macOS 主机？本文按 Linux 设计。
 - [ ] 预计的主机规模和每日 AI 分析预算是多少？
 - [ ] 低风险脚本允许 operator 自审是否合适，还是所有脚本都要 admin 审批？

@@ -1,0 +1,106 @@
+[
+  {
+    "name": "Java 请求失败带时间戳和线程",
+    "service": "order-api",
+    "level": "error",
+    "record": "2026-10-23 10:15:02.123 ERROR [http-nio-8080-exec-7] c.e.order.OrderController - Order 98231 failed for user alice@example.com after 3021ms",
+    "fingerprint": "2b18fd793a3f39f4",
+    "template": "ERROR c.e.order.OrderController - Order <N> failed for user <EMAIL> after <N>ms"
+  },
+  {
+    "name": "同一模板不同变量",
+    "service": "order-api",
+    "level": "error",
+    "record": "2026-10-23T11:00:59Z ERROR [http-nio-8080-exec-1] c.e.order.OrderController - Order 17 failed for user bob@corp.cn after 15ms",
+    "fingerprint": "2b18fd793a3f39f4",
+    "template": "ERROR c.e.order.OrderController - Order <N> failed for user <EMAIL> after <N>ms"
+  },
+  {
+    "name": "Java 堆栈只取业务栈帧",
+    "service": "order-api",
+    "level": "error",
+    "record": "2026-10-23 10:15:02 ERROR [main] c.e.order.OrderService - Payment failed\njava.lang.NullPointerException: Cannot invoke \"Order.getId()\" because \"o\" is null\n\tat com.example.order.OrderService.pay(OrderService.java:88)\n\tat com.example.order.OrderService.lambda$submit$0(OrderService.java:51)\n\tat java.base/java.util.concurrent.FutureTask.run(FutureTask.java:317)\n\tat org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:186)\n\tat com.example.order.OrderController.submit(OrderController.java:40)\nCaused by: java.sql.SQLException: timeout\n\tat com.zaxxer.hikari.pool.HikariPool.getConnection(HikariPool.java:181)\n\t... 12 more",
+    "fingerprint": "1f6ebc6cd781e4b5",
+    "template": "ERROR c.e.order.OrderService - Payment failed\njava.lang.NullPointerException\n  at com.example.order.OrderService.pay\n  at com.example.order.OrderService.lambda$submit$<N>\n  at com.example.order.OrderController.submit"
+  },
+  {
+    "name": "发版后行号变化指纹不变",
+    "service": "order-api",
+    "level": "error",
+    "record": "2026-10-24 09:00:00 ERROR [main] c.e.order.OrderService - Payment failed\njava.lang.NullPointerException: Cannot invoke \"Order.getId()\" because \"x\" is null\n\tat com.example.order.OrderService.pay(OrderService.java:93)\n\tat com.example.order.OrderService.lambda$submit$0(OrderService.java:55)\n\tat java.base/java.util.concurrent.FutureTask.run(FutureTask.java:317)\n\tat org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:186)\n\tat com.example.order.OrderController.submit(OrderController.java:41)",
+    "fingerprint": "1f6ebc6cd781e4b5",
+    "template": "ERROR c.e.order.OrderService - Payment failed\njava.lang.NullPointerException\n  at com.example.order.OrderService.pay\n  at com.example.order.OrderService.lambda$submit$<N>\n  at com.example.order.OrderController.submit"
+  },
+  {
+    "name": "Python logging.exception",
+    "service": "worker",
+    "level": "error",
+    "record": "ERROR:root:job 4411 crashed\nTraceback (most recent call last):\n  File \"/usr/lib/python3.12/threading.py\", line 1012, in run\n    self._target(*self._args)\n  File \"/srv/worker/jobs.py\", line 77, in handle\n    total = amount / count\nZeroDivisionError: division by zero",
+    "fingerprint": "d3ffb06dbec13f40",
+    "template": "ERROR:root:job <N> crashed\nZeroDivisionError\n  at /srv/worker/jobs.py:handle"
+  },
+  {
+    "name": "Go panic",
+    "service": "gateway",
+    "level": "fatal",
+    "record": "panic: runtime error: index out of range [5] with length 3\n\ngoroutine 1 [running]:\nmain.parse(0xc000012345, 0x3)\n\t/app/parse.go:42 +0x1d\nnet/http.HandlerFunc.ServeHTTP(0xc0001, 0xc0002)\n\t/usr/local/go/src/net/http/server.go:2166 +0x29\nmain.main()\n\t/app/main.go:12 +0x25",
+    "fingerprint": "ab1e9446dd91cf4c",
+    "template": "panic: runtime error: index out of range [<N>] with length <N>\npanic\n  at main.parse\n  at main.main"
+  },
+  {
+    "name": "Node 异常",
+    "service": "web",
+    "level": "error",
+    "record": "TypeError: Cannot read properties of undefined (reading 'id')\n    at getUser (/app/src/users.js:14:22)\n    at async Promise.all (index 0)\n    at Object.<anonymous> (/app/node_modules/express/lib/router.js:5:3)\n    at processTicksAndRejections (node:internal/process/task_queues:95:5)",
+    "fingerprint": "814b8fdb7f044268",
+    "template": "TypeError: Cannot read properties of undefined (reading '<STR>')\nTypeError\n  at getUser@/app/src/users.js"
+  },
+  {
+    "name": "syslog 前缀与 IP 端口",
+    "service": "nginx",
+    "level": "error",
+    "record": "Oct 23 10:00:01 web-01 nginx[2231]: upstream timed out (110: Connection timed out) while connecting to upstream, client: 10.2.3.4, upstream: \"http://10.0.0.8:8080/api\"",
+    "fingerprint": "2b7d07ff922d02e9",
+    "template": "nginx[<N>]: upstream timed out (<N>: Connection timed out) while connecting to upstream, client: <IP>, upstream: \"<STR>\""
+  },
+  {
+    "name": "UUID、十六进制、请求 ID",
+    "service": "billing",
+    "level": "error",
+    "record": "[12:01:02.555] ERROR request_id=ab12cd34 invoice 3f2c1a9e-7b44-4c1e-9d3a-2b8f6e1c0a11 checksum 9f86d081884c7d659a2feaa0 mismatch at 0x7ffd1234",
+    "fingerprint": "4b6d8dfe841967a6",
+    "template": "ERROR invoice <UUID> checksum <HEX> mismatch at <HEX>"
+  },
+  {
+    "name": "中文日志与引号",
+    "service": "billing",
+    "level": "error",
+    "record": "2026/10/23 10:00:00 [ERROR] 调用支付渠道 'alipay' 失败，重试 3 次后放弃，耗时 12.5s",
+    "fingerprint": "a7b93a4d1bf8175c",
+    "template": "[ERROR] 调用支付渠道 '<STR>' 失败，重试 <N> 次后放弃，耗时 <N>s"
+  },
+  {
+    "name": "撇号不被当作引号",
+    "service": "auth",
+    "level": "error",
+    "record": "ERROR can't find user 'u-1029' in tenant 7 (don't retry)",
+    "fingerprint": "807e2b02b7e11ec3",
+    "template": "ERROR can't find user '<STR>' in tenant <N> (don't retry)"
+  },
+  {
+    "name": "内核 OOM",
+    "service": "kernel",
+    "level": "fatal",
+    "record": "Out of memory: Killed process 31337 (java) total-vm:8123456kB, anon-rss:4012345kB, file-rss:0kB, shmem-rss:0kB, UID:1000 pgtables:9000kB oom_score_adj:0",
+    "fingerprint": "d9e0a09c103cb201",
+    "template": "Out of memory: Killed process <N> (java) total-vm:<N>kB, anon-rss:<N>kB, file-rss:<N>kB, shmem-rss:<N>kB, UID:<N> pgtables:<N>kB oom_score_adj:<N>"
+  },
+  {
+    "name": "全角空格不当作空白",
+    "service": "app",
+    "level": "error",
+    "record": "ERROR　任务　42　失败",
+    "fingerprint": "39b0574f8b3e22f5",
+    "template": "ERROR　任务　<N>　失败"
+  }
+]

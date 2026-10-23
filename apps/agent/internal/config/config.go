@@ -19,7 +19,34 @@ type Config struct {
 	QueueMaxBytes int64 `yaml:"queue_max_bytes"`
 	// 采集的磁盘挂载点会排除这些文件系统类型
 	IgnoreFSTypes []string `yaml:"ignore_fs_types"`
+	Logs          Logs     `yaml:"logs"`
 }
+
+// Logs 配置异常日志采集（设计文档 3.3）。
+type Logs struct {
+	Files    []LogFile `yaml:"files"`
+	Journald Journald  `yaml:"journald"`
+	// 没有明确级别的行命中这些关键字也算异常；为空时使用内置列表
+	Keywords []string `yaml:"keywords"`
+}
+
+type LogFile struct {
+	Service string   `yaml:"service"`
+	Paths   []string `yaml:"paths"`
+	// auto（默认）、plain、json、docker
+	Format string `yaml:"format"`
+}
+
+type Journald struct {
+	// 默认开启；不写时为 nil
+	Enabled *bool `yaml:"enabled"`
+	// 为空表示全部 unit
+	Units []string `yaml:"units"`
+	// 为空时用 unit 名作为服务名
+	Service string `yaml:"service"`
+}
+
+func (j Journald) IsEnabled() bool { return j.Enabled == nil || *j.Enabled }
 
 var defaultIgnoreFS = []string{
 	"tmpfs", "devtmpfs", "overlay", "squashfs", "proc", "sysfs", "cgroup", "cgroup2",
@@ -60,6 +87,18 @@ func (c *Config) normalize() error {
 	}
 	if len(c.IgnoreFSTypes) == 0 {
 		c.IgnoreFSTypes = defaultIgnoreFS
+	}
+	for i, f := range c.Logs.Files {
+		if f.Service == "" || len(f.Paths) == 0 {
+			return fmt.Errorf("logs.files[%d] 需要 service 和 paths", i)
+		}
+		switch f.Format {
+		case "":
+			c.Logs.Files[i].Format = "auto"
+		case "auto", "plain", "json", "docker":
+		default:
+			return fmt.Errorf("logs.files[%d].format 只能是 auto、plain、json、docker", i)
+		}
 	}
 	return nil
 }

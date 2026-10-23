@@ -93,6 +93,7 @@ export function HostsPage() {
                   <th className="px-3 py-3 font-medium">内存</th>
                   <th className="px-3 py-3 font-medium">磁盘（最高）</th>
                   <th className="px-3 py-3 font-medium">Load 1m</th>
+                  <th className="px-3 py-3 font-medium">告警</th>
                   <th className="px-3 py-3 font-medium">最后上报</th>
                   <th className="px-5 py-3 font-medium">Agent</th>
                 </tr>
@@ -108,7 +109,7 @@ export function HostsPage() {
                     >
                       <td className="px-5 py-3">
                         <div className="flex items-center gap-2.5">
-                          <StatusDot tone={off ? 'off' : 'ok'} />
+                          <StatusDot tone={off ? 'off' : h.alerts.critical ? 'crit' : h.alerts.warning ? 'warn' : 'ok'} />
                           <div className="min-w-0">
                             <div className="truncate font-medium">{h.hostname}</div>
                             <div className="mt-1 flex flex-wrap items-center gap-1">
@@ -126,6 +127,16 @@ export function HostsPage() {
                       <td className="px-3 py-3"><UsageCell value={h.snapshot.memPct} /></td>
                       <td className="px-3 py-3"><UsageCell value={h.snapshot.diskPct} crit={85} /></td>
                       <td className="num px-3 py-3 text-xs">{h.snapshot.load1?.toFixed(2) ?? '—'}</td>
+                      <td className="px-3 py-3 text-xs">
+                        {h.alerts.critical + h.alerts.warning === 0 ? (
+                          <span className="text-faint">—</span>
+                        ) : (
+                          <span className="flex gap-1.5">
+                            {h.alerts.critical > 0 && <Badge className="border-crit/40 text-crit">严重 {h.alerts.critical}</Badge>}
+                            {h.alerts.warning > 0 && <Badge className="border-warn/40 text-warn">警告 {h.alerts.warning}</Badge>}
+                          </span>
+                        )}
+                      </td>
                       <td className="px-3 py-3 text-xs" title={formatTime(h.lastSeenAt)}>
                         <span className={off ? 'text-warn' : 'text-muted'}>{formatRelative(h.lastSeenAt)}</span>
                       </td>

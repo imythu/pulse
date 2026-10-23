@@ -1,15 +1,16 @@
-import { Metric, type MetricSeries, type MetricsResponse, type ProcessInfo } from '@pulse/shared';
+import { Metric, type AlertInfo, type MetricSeries, type MetricsResponse, type ProcessInfo, type RuleInfo } from '@pulse/shared';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams } from '@tanstack/react-router';
 import { ArrowLeft, Trash2 } from 'lucide-react';
 import { useState } from 'react';
-import { MetricChart } from '@/components/MetricChart';
+import { AlertTags, alertValueText, incidentDuration, SeverityBadge, Sparkline } from '@/components/alerting';
+import { MetricChart, type ChartBand } from '@/components/MetricChart';
 import { Badge, Boundary, Button, Card, CardHeader, Dialog, EmptyState, ErrorNote, Skeleton, StatusDot } from '@/components/ui';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { formatBytes, formatDuration, formatPct, formatRelative, formatTime } from '@/lib/format';
 import { useLive } from '@/lib/live';
-import { keys, useHost, useMe, useMetrics } from '@/lib/queries';
+import { keys, useHost, useHostAlerts, useIncidents, useLogGroups, useMe, useMetrics, useRules } from '@/lib/queries';
 
 const RANGES = [
   { label: '1 小时', ms: 3600_000 },
@@ -42,6 +43,116 @@ function mergeWindow(prev: MetricsResponse | undefined, incoming: MetricSeries[]
     s.points = s.points.filter((q) => q[0] >= cutoff);
   }
   return { ...prev, to: Date.now(), series };
+}
+
+/** 图表的告警阈值取自对应规则，规则停用时不画。 */
+function thresholdOf(rules: RuleInfo[] | undefined, metric: string): number | undefined {
+  const r = rules?.find((x) => x.kind === 'threshold' && x.metric === metric && x.enabled);
+  return r?.params.threshold;
+}
+
+/** 某个指标相关规则的告警区间，未恢复的画到现在。 */
+function bandsOf(alerts: AlertInfo[] | undefined, rules: RuleInfo[] | undefined, metric: string): ChartBand[] {
+  const ids = new Set(rules?.filter((r) => r.metric === metric).map((r) => r.id));
+  return (alerts ?? [])
+    .filter((a) => a.ruleId && ids.has(a.ruleId))
+    .map((a) => ({ from: a.startedAt, to: a.resolvedAt ?? Date.now(), severity: a.severity }));
+}
+
+function HostAlerts({ hostId, alerts, rules }: { hostId: string; alerts: AlertInfo[] | undefined; rules: RuleInfo[] | undefined }) {
+  const incidents = useIncidents('all', hostId, 5);
+  const firing = alerts?.filter((a) => a.state === 'firing') ?? [];
+  const recent = incidents.data?.pages[0]?.items;
+  return (
+    <Card>
+      <CardHeader title="告警" hint={firing.length ? `${firing.length} 条未恢复` : '当前没有未恢复的告警'} />
+      <Boundary>
+        {firing.length > 0 && (
+          <ul className="divide-y divide-line border-b border-line">
+            {firing.map((a) => (
+              <li key={a.id} className="px-5 py-3">
+                <div className="flex flex-wrap items-center gap-2 text-sm">
+                  <SeverityBadge severity={a.severity} />
+                  {a.incidentId ? (
+                    <Link to="/incidents/$id" params={{ id: a.incidentId }} className="font-medium hover:text-brand">
+                      {a.title}
+                    </Link>
+                  ) : (
+                    <span className="font-medium">{a.title}</span>
+                  )}
+                  <AlertTags alert={a} />
+                </div>
+                <p className="num mt-1 text-xs text-muted">
+                  {[alertValueText(a, rules?.find((r) => r.id === a.ruleId)?.metric ?? null), `${formatRelative(a.startedAt)}开始`].filter(Boolean).join(' · ')}
+                </p>
+              </li>
+            ))}
+          </ul>
+        )}
+        <div className="px-5 pt-3 pb-1 text-xs text-faint">最近的 Incident</div>
+        {!recent ? (
+          <Skeleton className="mx-5 my-3 h-16" />
+        ) : !recent.length ? (
+          <p className="px-5 pb-4 text-sm text-muted">这台主机还没有产生过 Incident。</p>
+        ) : (
+          <ul className="pb-2">
+            {recent.map((i) => (
+              <li key={i.id}>
+                <Link to="/incidents/$id" params={{ id: i.id }} className="flex items-center gap-3 px-5 py-2 text-sm hover:bg-white/[0.02]">
+                  <StatusDot tone={i.status === 'resolved' ? 'ok' : i.severity === 'critical' ? 'crit' : 'warn'} />
+                  <span className="num text-xs text-faint">#{i.no}</span>
+                  <span className="min-w-0 flex-1 truncate">{i.title}</span>
+                  <span className="shrink-0 text-xs text-faint">
+                    {formatRelative(i.openedAt)} · {incidentDuration(i)}
+                  </span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Boundary>
+    </Card>
+  );
+}
+
+function HostLogs({ hostId }: { hostId: string }) {
+  const groups = useLogGroups({ status: 'active', hostId });
+  const items = groups.data?.items.slice(0, 6);
+  return (
+    <Card>
+      <CardHeader
+        title="日志指纹"
+        hint="这台主机出现过的异常日志"
+        action={
+          <Link to="/logs" className="text-xs text-brand hover:underline">
+            全部
+          </Link>
+        }
+      />
+      <Boundary>
+        {!items ? (
+          <Skeleton className="m-5 h-16" />
+        ) : !items.length ? (
+          <p className="px-5 py-4 text-sm text-muted">没有活跃的异常日志。</p>
+        ) : (
+          <ul className="divide-y divide-line">
+            {items.map((g) => (
+              <li key={g.id}>
+                <Link to="/logs/$id" params={{ id: g.id }} className="flex items-center gap-3 px-5 py-2.5 hover:bg-white/[0.02]">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs text-muted">{g.service}</div>
+                    <div className="truncate font-mono text-xs">{g.template.split('\n')[0]}</div>
+                  </div>
+                  <Sparkline values={g.hourly} tone={g.level === 'fatal' ? 'crit' : 'brand'} />
+                  <span className="num w-16 text-right text-xs text-muted">{g.count24h.toLocaleString('zh-CN')}</span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Boundary>
+    </Card>
+  );
 }
 
 function InfoItem({ label, children }: { label: string; children: React.ReactNode }) {
@@ -95,6 +206,8 @@ export function HostDetailPage() {
   const me = useMe();
   const [range, setRange] = useState(LIVE_RANGE);
   const metrics = useMetrics(id, range);
+  const rules = useRules();
+  const alerts = useHostAlerts(id, range);
   const [procTab, setProcTab] = useState<'byCpu' | 'byMem'>('byCpu');
   const [confirmDelete, setConfirmDelete] = useState(false);
   const qc = useQueryClient();
@@ -181,10 +294,16 @@ export function HostDetailPage() {
         </Card>
       )}
 
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+        <HostAlerts hostId={id} alerts={alerts.data} rules={rules.data} />
+        <HostLogs hostId={id} />
+      </div>
+
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-xs text-faint">
           {metrics.data ? `聚合粒度 ${metrics.data.stepSeconds >= 3600 ? `${metrics.data.stepSeconds / 3600} 小时` : `${metrics.data.stepSeconds / 60} 分钟`} · 曲线为窗口平均值` : '加载指标…'}
           {range === LIVE_RANGE && ' · 实时追加'}
+          {' · 红黄色带为告警区间'}
         </p>
         <div className="flex rounded-lg border border-line bg-surface p-0.5 text-xs">
           {RANGES.map((r) => (
@@ -201,7 +320,8 @@ export function HostDetailPage() {
         {[
           {
             title: 'CPU',
-            threshold: 90,
+            threshold: thresholdOf(rules.data, Metric.cpuUsage),
+            bands: bandsOf(alerts.data, rules.data, Metric.cpuUsage),
             max: 100,
             lines: [
               { label: '使用率', metric: Metric.cpuUsage, series: pick(s, Metric.cpuUsage), color: C.teal },
@@ -210,7 +330,8 @@ export function HostDetailPage() {
           },
           {
             title: '内存',
-            threshold: 90,
+            threshold: thresholdOf(rules.data, Metric.memUsed),
+            bands: bandsOf(alerts.data, rules.data, Metric.memUsed),
             max: 100,
             lines: [
               { label: '内存', metric: Metric.memUsed, series: pick(s, Metric.memUsed), color: C.indigo },
@@ -219,7 +340,8 @@ export function HostDetailPage() {
           },
           {
             title: '磁盘使用率',
-            threshold: 85,
+            threshold: thresholdOf(rules.data, Metric.diskUsed),
+            bands: bandsOf(alerts.data, rules.data, Metric.diskUsed),
             max: 100,
             lines: disks.map((d, i) => ({ label: d.tag, metric: Metric.diskUsed, series: d, color: PALETTE[i % PALETTE.length]! })),
           },
@@ -262,7 +384,7 @@ export function HostDetailPage() {
                 ) : chart.lines.every((l) => !l.series?.points.length) ? (
                   <EmptyState title="该时间范围内没有数据">{off ? '主机离线中。' : 'Agent 每分钟上报一次，稍等片刻。'}</EmptyState>
                 ) : (
-                  <MetricChart group={`host-${id}`} lines={chart.lines} threshold={chart.threshold} max={chart.max} />
+                  <MetricChart group={`host-${id}`} lines={chart.lines} threshold={chart.threshold} bands={chart.bands} max={chart.max} />
                 )}
               </Boundary>
             </div>

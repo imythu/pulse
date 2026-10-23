@@ -18,6 +18,7 @@ import (
 	"pulse/agent/internal/collect"
 	"pulse/agent/internal/config"
 	"pulse/agent/internal/identity"
+	"pulse/agent/internal/logs"
 	"pulse/agent/internal/protocol"
 	"pulse/agent/internal/queue"
 	"pulse/agent/internal/transport"
@@ -67,9 +68,13 @@ func New(cfg *config.Config, version string, log *slog.Logger) (*Agent, error) {
 func (a *Agent) Run(ctx context.Context) error {
 	defer a.q.Close()
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 	go func() { defer wg.Done(); a.collectLoop(ctx) }()
 	go func() { defer wg.Done(); a.procsLoop(ctx) }()
+	go func() {
+		defer wg.Done()
+		a.logsCollector().Run(ctx, func(p protocol.LogsPayload) { a.enqueue(protocol.TypeLogs, p) })
+	}()
 	err := a.connectLoop(ctx)
 	wg.Wait()
 	return err
@@ -148,6 +153,19 @@ func exceeds(s collect.Sample, t protocol.EarlyPush) bool {
 		return s.Value >= t.DiskPct
 	}
 	return false
+}
+
+func (a *Agent) logsCollector() *logs.Collector {
+	lc := a.cfg.Logs
+	var files []logs.FileSource
+	for _, f := range lc.Files {
+		files = append(files, logs.FileSource{Service: f.Service, Paths: f.Paths, Format: f.Format})
+	}
+	var journals []logs.JournaldSource
+	if lc.Journald.IsEnabled() {
+		journals = append(journals, logs.JournaldSource{Service: lc.Journald.Service, Units: lc.Journald.Units})
+	}
+	return logs.NewCollector(files, journals, lc.Keywords, a.log)
 }
 
 func (a *Agent) procsLoop(ctx context.Context) {

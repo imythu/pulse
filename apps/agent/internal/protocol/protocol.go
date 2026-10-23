@@ -124,3 +124,25 @@ type EnrollResponse struct {
 func AuthMessage(agentID string, ts int64) string {
 	return fmt.Sprintf("pulse-agent-auth:%s:%d", agentID, ts)
 }
+
+const TypeLogs = "logs"
+
+// LogEvent 是一个指纹在一个窗口内的汇总：首条完整样本 + 次数（设计文档 4.1）。
+type LogEvent struct {
+	Fingerprint string   `json:"fingerprint"`
+	Service     string   `json:"service"`
+	Level       string   `json:"level"`
+	Source      string   `json:"source"`
+	Message     string   `json:"message"`
+	Context     []string `json:"context"`
+	Count       int      `json:"count"`
+	FirstTs     int64    `json:"firstTs"`
+	LastTs      int64    `json:"lastTs"`
+}
+
+type LogsPayload struct {
+	RulesVersion int        `json:"rulesVersion"`
+	Events       []LogEvent `json:"events"`
+	// 本窗口因指纹数超过上限而只计数、没有样本的记录数
+	Dropped int `json:"dropped"`
+}

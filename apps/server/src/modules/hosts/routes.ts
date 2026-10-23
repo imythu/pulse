@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import type { Sql } from '../../db/index.js';
 import { badRequest, notFound } from '../../lib/http-error.js';
 import { audit, requireRole } from '../auth/index.js';
+import type { AlertEngine } from '../alerting/engine.js';
 import type { Gateway } from '../gateway/index.js';
 import { getHostRow, listHosts, toDetail } from './repo.js';
 
@@ -19,17 +20,18 @@ export function chooseStep(from: number, to: number): { stepSeconds: number; sou
   return { stepSeconds, source: range > 7 * DAY ? 'metrics_1h' : 'metrics' };
 }
 
-export function registerHostRoutes(app: FastifyInstance, sql: Sql, gateway: Gateway) {
+export function registerHostRoutes(app: FastifyInstance, sql: Sql, gateway: Gateway, engine: AlertEngine) {
   const viewer = { preHandler: requireRole(sql, 'viewer') };
 
   app.get('/api/v1/overview', viewer, async (): Promise<OverviewStats> => {
-    const [row] = await sql<{ total: number; online: number; cpu: number | null; mem: number | null }[]>`
+    const [row] = await sql<{ total: number; online: number; cpu: number | null; mem: number | null; incidents: number }[]>`
       SELECT count(*)::int AS total,
              count(*) FILTER (WHERE status = 'online')::int AS online,
              avg((snapshot->>'cpuPct')::float) FILTER (WHERE status = 'online') AS cpu,
-             avg((snapshot->>'memPct')::float) FILTER (WHERE status = 'online') AS mem
+             avg((snapshot->>'memPct')::float) FILTER (WHERE status = 'online') AS mem,
+             (SELECT count(*) FROM incidents WHERE status <> 'resolved')::int AS incidents
       FROM hosts`;
-    return { hostsTotal: row!.total, hostsOnline: row!.online, avgCpuPct: row!.cpu, avgMemPct: row!.mem, openIncidents: 0 };
+    return { hostsTotal: row!.total, hostsOnline: row!.online, avgCpuPct: row!.cpu, avgMemPct: row!.mem, openIncidents: row!.incidents };
   });
 
   app.get('/api/v1/hosts', viewer, async () => ({ items: await listHosts(sql) }));
@@ -45,6 +47,7 @@ export function registerHostRoutes(app: FastifyInstance, sql: Sql, gateway: Gate
     if (!row) throw notFound('主机不存在');
     await gateway.revoke(row.id, `user:${req.user!.id}`);
     await sql`DELETE FROM hosts WHERE id = ${row.id}`;
+    await engine.forgetHost(row.id);
     await audit(sql, `user:${req.user!.id}`, 'host.deleted', row.id, { hostname: row.hostname });
     return { ok: true };
   });

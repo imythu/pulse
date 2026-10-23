@@ -13,6 +13,9 @@ export interface HostRow {
   snapshot: Partial<HostSnapshot>;
   procs: (ProcsPayload & { at: number }) | null;
   created_at: Date;
+  /** 只有带告警计数的查询（listHosts、getHostRow）才有 */
+  alert_warning?: number;
+  alert_critical?: number;
 }
 
 const EMPTY_SNAPSHOT: HostSnapshot = { cpuPct: null, memPct: null, diskPct: null, load1: null, at: null };
@@ -31,6 +34,7 @@ export function toSummary(row: HostRow): HostSummary {
     lastSeenAt: row.last_seen_at?.getTime() ?? null,
     createdAt: row.created_at.getTime(),
     snapshot: { ...EMPTY_SNAPSHOT, ...row.snapshot },
+    alerts: { warning: row.alert_warning ?? 0, critical: row.alert_critical ?? 0 },
   };
 }
 
@@ -51,15 +55,27 @@ export function snapshotFromPoints(points: MetricPoint[], at: number): HostSnaps
   };
 }
 
+const withAlertCounts = (sql: Sql) => sql`
+  SELECT h.*, coalesce(a.warning, 0) AS alert_warning, coalesce(a.critical, 0) AS alert_critical
+  FROM hosts h LEFT JOIN (
+    SELECT host_id, count(*) FILTER (WHERE severity = 'warning')::int AS warning,
+           count(*) FILTER (WHERE severity = 'critical')::int AS critical
+    FROM alerts WHERE state = 'firing' GROUP BY host_id
+  ) a ON a.host_id = h.id`;
+
 export async function listHosts(sql: Sql): Promise<HostSummary[]> {
-  const rows = await sql<HostRow[]>`SELECT * FROM hosts ORDER BY hostname`;
+  const rows = await sql<HostRow[]>`${withAlertCounts(sql)} ORDER BY h.hostname`;
   return rows.map(toSummary);
 }
 
 export async function getHostRow(sql: Sql, id: string): Promise<HostRow | undefined> {
   if (!isUuid(id)) return undefined;
-  const [row] = await sql<HostRow[]>`SELECT * FROM hosts WHERE id = ${id}`;
+  const [row] = await sql<HostRow[]>`${withAlertCounts(sql)} WHERE h.id = ${id}`;
   return row;
+}
+
+export function hostCtx(row: Pick<HostRow, 'id' | 'hostname' | 'labels'>) {
+  return { id: row.id, hostname: row.hostname, labels: row.labels };
 }
 
 export function isUuid(s: string): boolean {

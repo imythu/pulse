@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./fingerprint": "./src/fingerprint.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
@@ -13,6 +14,7 @@
     "zod": "^3.25.0"
   },
   "devDependencies": {
+    "@types/node": "^22.20.5",
     "typescript": "^5.8.0"
   }
 }

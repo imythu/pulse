@@ -5,6 +5,11 @@ import { ApiError, api } from '@/lib/api';
 import { keys } from '@/lib/queries';
 import { HostDetailPage } from '@/pages/HostDetail';
 import { HostsPage } from '@/pages/Hosts';
+import { IncidentDetailPage } from '@/pages/IncidentDetail';
+import { IncidentsPage } from '@/pages/Incidents';
+import { LogGroupDetailPage } from '@/pages/LogGroupDetail';
+import { LogsPage } from '@/pages/Logs';
+import { SettingsPage } from '@/pages/Settings';
 import { AuthPage } from '@/pages/Login';
 import { OverviewPage } from '@/pages/Overview';
 import type { Me } from '@pulse/shared';
@@ -65,8 +70,17 @@ const app = createRoute({
 const overview = createRoute({ getParentRoute: () => app, path: '/', component: OverviewPage });
 const hosts = createRoute({ getParentRoute: () => app, path: '/hosts', component: HostsPage });
 const hostDetail = createRoute({ getParentRoute: () => app, path: '/hosts/$id', component: HostDetailPage });
+const incidents = createRoute({ getParentRoute: () => app, path: '/incidents', component: IncidentsPage });
+const incidentDetail = createRoute({ getParentRoute: () => app, path: '/incidents/$id', component: IncidentDetailPage });
+const logs = createRoute({ getParentRoute: () => app, path: '/logs', component: LogsPage });
+const logDetail = createRoute({ getParentRoute: () => app, path: '/logs/$id', component: LogGroupDetailPage });
+const settings = createRoute({ getParentRoute: () => app, path: '/settings', component: SettingsPage });
 
-const routeTree = root.addChildren([login, setup, app.addChildren([overview, hosts, hostDetail])]);
+const routeTree = root.addChildren([
+  login,
+  setup,
+  app.addChildren([overview, hosts, hostDetail, incidents, incidentDetail, logs, logDetail, settings]),
+]);
 
 export function makeRouter(queryClient: QueryClient) {
   return createRouter({ routeTree, context: { queryClient }, defaultPreload: 'intent' });

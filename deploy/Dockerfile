@@ -4,6 +4,7 @@ WORKDIR /src/apps/agent
 COPY apps/agent/go.mod apps/agent/go.sum ./
 RUN go mod download
 COPY apps/agent ./
+COPY packages/shared/fingerprint /src/packages/shared/fingerprint
 RUN make build VERSION=$(date +%Y.%m.%d)
 
 FROM node:22-bookworm AS build

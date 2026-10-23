@@ -9,16 +9,28 @@ import type { Config } from './config.js';
 import type { Sql } from './db/index.js';
 import { HttpError } from './lib/http-error.js';
 import { LiveBus } from './lib/live.js';
+import { AlertEngine, type EngineOptions } from './modules/alerting/engine.js';
+import { registerAlertingRoutes } from './modules/alerting/routes.js';
 import { registerAuth } from './modules/auth/index.js';
 import { registerEnroll } from './modules/enroll/index.js';
 import { Gateway } from './modules/gateway/index.js';
 import { registerHostRoutes } from './modules/hosts/routes.js';
 import { registerLive } from './modules/live/index.js';
+import { registerLogRoutes } from './modules/logs/routes.js';
+import { Notifier, registerNotifyRoutes, type NotifierOptions } from './modules/notify/index.js';
 
 export interface App {
   app: FastifyInstance;
   gateway: Gateway;
   live: LiveBus;
+  engine: AlertEngine;
+  notifier: Notifier;
+}
+
+export interface BuildOptions {
+  logger?: boolean;
+  engine?: EngineOptions;
+  notifier?: Partial<NotifierOptions>;
 }
 
 function findUp(rel: string): string {
@@ -31,7 +43,7 @@ function findUp(rel: string): string {
   throw new Error(`找不到 ${rel}`);
 }
 
-export async function buildApp(config: Config, sql: Sql, opts: { logger?: boolean } = {}): Promise<App> {
+export async function buildApp(config: Config, sql: Sql, opts: BuildOptions = {}): Promise<App> {
   const app = Fastify({
     logger: opts.logger === false ? false : { level: config.LOG_LEVEL },
     bodyLimit: 8 * 1024 * 1024,
@@ -52,18 +64,24 @@ export async function buildApp(config: Config, sql: Sql, opts: { logger?: boolea
   await app.register(cookie);
   await app.register(websocket, { options: { maxPayload: 8 * 1024 * 1024 } });
 
+  const publicUrl = config.PULSE_PUBLIC_URL.replace(/\/$/, '');
   const live = new LiveBus();
-  const gateway = new Gateway(sql, live, app.log, { offlineAfterSeconds: config.PULSE_OFFLINE_AFTER_SECONDS });
+  const notifier = new Notifier(sql, app.log, { publicUrl, ...opts.notifier });
+  const engine = new AlertEngine(sql, live, notifier, app.log, opts.engine);
+  const gateway = new Gateway(sql, live, app.log, engine, { offlineAfterSeconds: config.PULSE_OFFLINE_AFTER_SECONDS });
 
   app.get('/healthz', async () => ({ ok: true }));
   registerAuth(app, sql, { secureCookies: config.PULSE_PUBLIC_URL.startsWith('https://') });
   registerEnroll(app, sql, live, {
-    publicUrl: config.PULSE_PUBLIC_URL.replace(/\/$/, ''),
+    publicUrl,
     agentDist: config.PULSE_AGENT_DIST ? resolve(config.PULSE_AGENT_DIST) : undefined,
     installScriptPath: findUp('deploy/install.sh'),
   });
   gateway.register(app);
-  registerHostRoutes(app, sql, gateway);
+  registerHostRoutes(app, sql, gateway, engine);
+  registerAlertingRoutes(app, sql, engine);
+  registerLogRoutes(app, sql, engine);
+  registerNotifyRoutes(app, sql, notifier);
   registerLive(app, sql, live);
 
   // 生产环境由后端同源托管前端，前端路由一律回退到 index.html
@@ -79,5 +97,5 @@ export async function buildApp(config: Config, sql: Sql, opts: { logger?: boolea
     });
   }
 
-  return { app, gateway, live };
+  return { app, gateway, live, engine, notifier };
 }

@@ -26,6 +26,13 @@ export interface HostSummary {
   lastSeenAt: number | null;
   createdAt: number;
   snapshot: HostSnapshot;
+  /** 当前 firing 的告警数 */
+  alerts: HostAlertCounts;
+}
+
+export interface HostAlertCounts {
+  warning: number;
+  critical: number;
 }
 
 export interface HostDetail extends HostSummary {
@@ -93,6 +100,195 @@ export const EnrollTokenRequest = z.object({
   labels: z.record(z.string(), z.string()).default({}),
 });
 
+// ---------- 告警与事件（设计文档 4） ----------
+
+export type Severity = 'warning' | 'critical';
+export type RuleKind = 'threshold' | 'disk_fill' | 'mem_leak' | 'offline' | 'log';
+
+export interface HostRef {
+  id: string;
+  hostname: string;
+}
+
+export interface AlertInfo {
+  id: string;
+  ruleId: string | null;
+  ruleName: string;
+  kind: RuleKind;
+  hostId: string | null;
+  hostname: string | null;
+  logGroupId: string | null;
+  /** 磁盘挂载点等对象 */
+  tag: string;
+  title: string;
+  state: 'firing' | 'resolved';
+  severity: Severity;
+  escalated: boolean;
+  /** 1 小时内反复触发 3 次以上，暂停通知 */
+  flapping: boolean;
+  value: number | null;
+  peakValue: number | null;
+  threshold: number | null;
+  /** 日志告警为出现次数，指标告警为评估次数 */
+  count: number;
+  /** 触发与升级原因，如 new、recur、spike、spread */
+  reasons: string[];
+  startedAt: number;
+  lastSeenAt: number;
+  resolvedAt: number | null;
+  incidentId: string | null;
+}
+
+export interface IncidentSummary {
+  id: string;
+  /** 便于口头沟通的递增编号 */
+  no: number;
+  title: string;
+  severity: Severity;
+  status: 'open' | 'resolved';
+  service: string | null;
+  hosts: HostRef[];
+  alertCount: number;
+  firingCount: number;
+  openedAt: number;
+  updatedAt: number;
+  resolvedAt: number | null;
+}
+
+export type IncidentEventType =
+  | 'opened'
+  | 'alert_joined'
+  | 'alert_escalated'
+  | 'alert_resolved'
+  | 'alert_reopened'
+  | 'flapping'
+  | 'resolved'
+  | 'reopened'
+  | 'notified'
+  | 'notify_failed';
+
+export interface IncidentEvent {
+  id: number;
+  at: number;
+  type: IncidentEventType;
+  alertId: string | null;
+  message: string;
+}
+
+export interface IncidentDetail extends IncidentSummary {
+  alerts: AlertInfo[];
+  events: IncidentEvent[];
+  logGroups: LogGroupSummary[];
+}
+
+export const IncidentListQuery = z.object({
+  status: z.enum(['open', 'resolved', 'all']).default('all'),
+  hostId: z.string().uuid().optional(),
+  cursor: z.coerce.number().int().optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+});
+
+export interface Page<T> {
+  items: T[];
+  nextCursor: number | null;
+}
+
+export type LogGroupStatus = 'active' | 'ignored' | 'resolved';
+
+export interface LogGroupSummary {
+  id: string;
+  service: string;
+  fingerprint: string;
+  level: 'error' | 'fatal';
+  template: string;
+  firstSeen: number;
+  lastSeen: number;
+  totalCount: number;
+  hostCount: number;
+  status: LogGroupStatus;
+  resolvedCommit: string | null;
+  /** 最近 24 小时的次数 */
+  count24h: number;
+  /** 最近 24 小时每小时的次数，最早的在前 */
+  hourly: number[];
+}
+
+export interface LogSample {
+  id: number;
+  hostId: string | null;
+  hostname: string | null;
+  time: number;
+  source: string;
+  message: string;
+  context: string[];
+}
+
+export interface LogGroupDetail extends LogGroupSummary {
+  hosts: HostRef[];
+  samples: LogSample[];
+  /** 最近 24 小时每 10 分钟的次数：[时间戳毫秒, 次数] */
+  series: [number, number][];
+  activeAlertId: string | null;
+}
+
+export const LogGroupListQuery = z.object({
+  status: z.enum(['active', 'ignored', 'resolved', 'all']).default('active'),
+  service: z.string().max(128).optional(),
+  hostId: z.string().uuid().optional(),
+  q: z.string().max(200).optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(100),
+});
+
+export const LogGroupPatch = z.object({
+  status: z.enum(['active', 'ignored', 'resolved']),
+  /** 标记已解决时可关联修复的提交 */
+  resolvedCommit: z.string().trim().max(64).optional(),
+});
+
+export interface RuleInfo {
+  id: string;
+  name: string;
+  description: string;
+  kind: RuleKind;
+  metric: string | null;
+  params: Record<string, number>;
+  severity: Severity;
+  scope: { labels: Record<string, string> };
+  enabled: boolean;
+  updatedAt: number;
+}
+
+export const RulePatch = z.object({
+  enabled: z.boolean().optional(),
+  severity: z.enum(['warning', 'critical']).optional(),
+  params: z.record(z.string(), z.number().finite().nonnegative()).optional(),
+  scope: z.object({ labels: z.record(z.string().min(1), z.string()) }).optional(),
+});
+
+export type ChannelKind = 'webhook' | 'feishu' | 'wecom' | 'dingtalk' | 'slack';
+
+export interface NotificationChannel {
+  id: string;
+  name: string;
+  kind: ChannelKind;
+  /** 只显示协议和主机名，完整地址含令牌，不回传 */
+  urlHint: string;
+  hasSecret: boolean;
+  minSeverity: Severity;
+  enabled: boolean;
+  createdAt: number;
+}
+
+export const ChannelInput = z.object({
+  name: z.string().trim().min(1).max(64),
+  kind: z.enum(['webhook', 'feishu', 'wecom', 'dingtalk', 'slack']),
+  /** 编辑时留空表示不修改 */
+  url: z.string().url().max(2048).optional(),
+  secret: z.string().max(256).optional(),
+  minSeverity: z.enum(['warning', 'critical']).default('warning'),
+  enabled: z.boolean().default(true),
+});
+
 // ---------- 实时推送 ----------
 
 export type LiveChannel = 'overview' | `host:${string}`;
@@ -101,6 +297,8 @@ export type LiveEvent =
   | { channel: 'overview'; type: 'host.status'; host: HostSummary; at: number }
   | { channel: 'overview'; type: 'host.enrolled'; host: HostSummary; at: number }
   | { channel: 'overview'; type: 'host.snapshot'; hostId: string; snapshot: HostSnapshot }
+  | { channel: 'overview'; type: 'host.alerts'; hostId: string; alerts: HostAlertCounts }
+  | { channel: 'overview'; type: 'incident.changed'; incident: IncidentSummary; change: IncidentEventType; at: number }
   | { channel: `host:${string}`; type: 'metrics'; hostId: string; windowStart: number; series: MetricSeries[] }
   | { channel: `host:${string}`; type: 'procs'; hostId: string; procs: ProcsPayload & { at: number } };
 

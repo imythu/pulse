@@ -9,13 +9,34 @@ export interface ChartLine {
   color: string;
 }
 
+/** 告警区间，画成半透明色带 */
+export interface ChartBand {
+  from: number;
+  to: number;
+  severity: 'warning' | 'critical';
+}
+
 type ECharts = import('echarts/core').ECharts;
 
 /**
  * 时序折线图。同一 group 的图表联动 tooltip；
- * threshold 画出告警阈值参考线，让“高不高”有据可依。
+ * threshold 画出告警阈值参考线，bands 标出告警持续的时间段，让“高不高”有据可依。
  */
-export function MetricChart({ lines, group, threshold, max, height = 200 }: { lines: ChartLine[]; group: string; threshold?: number; max?: number; height?: number }) {
+export function MetricChart({
+  lines,
+  group,
+  threshold,
+  bands,
+  max,
+  height = 200,
+}: {
+  lines: ChartLine[];
+  group: string;
+  threshold?: number;
+  bands?: ChartBand[];
+  max?: number;
+  height?: number;
+}) {
   const el = useRef<HTMLDivElement>(null);
   const chart = useRef<ECharts | null>(null);
 
@@ -86,6 +107,16 @@ export function MetricChart({ lines, group, threshold, max, height = 200 }: { li
                   lineStyle: { color: '#ef4444', type: 'dashed', opacity: 0.6 },
                   label: { position: 'insideEndTop', color: '#ef4444', fontSize: 10, formatter: `告警阈值 ${threshold}%` },
                   data: [{ yAxis: threshold }],
+                }
+              : undefined,
+          markArea:
+            i === 0 && bands?.length
+              ? {
+                  silent: true,
+                  data: bands.map((b) => [
+                    { xAxis: b.from, itemStyle: { color: b.severity === 'critical' ? 'rgba(239,68,68,0.10)' : 'rgba(251,191,36,0.10)' } },
+                    { xAxis: b.to },
+                  ]),
                 }
               : undefined,
         })),

@@ -39,6 +39,7 @@ describe.skipIf(!url)('gateway', () => {
     await sql`CREATE SCHEMA public`;
     await migrate(sql, migrationsDir());
     app = await buildApp(loadConfig({ DATABASE_URL: url!, PULSE_OFFLINE_AFTER_SECONDS: '45' }), sql, { logger: false });
+    await app.engine.reload();
     await app.app.listen({ port: 0, host: '127.0.0.1' });
     const addr = app.app.server.address();
     base = `127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
@@ -108,10 +109,34 @@ describe.skipIf(!url)('gateway', () => {
     const [h] = await sql<{ status: string; labels: Record<string, string>; last_seq: string }[]>`SELECT status, labels, last_seq FROM hosts WHERE id = ${agentId}`;
     expect(h).toMatchObject({ status: 'online', labels: { env: 'test', role: 'web' }, last_seq: '2' });
 
+    // 日志汇总：Go 的空切片编码为 null，服务器按自己的规则重新计算指纹并产生告警
+    send({
+      type: 'logs',
+      seq: 3,
+      ts,
+      payload: {
+        rulesVersion: 1,
+        dropped: 0,
+        events: [
+          { fingerprint: 'x', service: 'api', level: 'error', source: '/var/log/api.log', message: 'ERROR db 10.0.0.9:5432 unreachable', context: null, count: 42, firstTs: ts, lastTs: ts },
+        ],
+      },
+    });
+    expect(await waitAck(5)).toBe(3);
+    await app.engine.idle();
+    const [group] = await sql<{ template: string; total_count: string }[]>`SELECT template, total_count FROM log_groups`;
+    expect(group).toEqual({ template: 'ERROR db <IP> unreachable', total_count: '42' });
+    const [alert] = await sql<{ state: string }[]>`SELECT state FROM alerts WHERE host_id = ${agentId}`;
+    expect(alert?.state).toBe('firing');
+
     ws.close();
     await new Promise((r) => setTimeout(r, 200));
     const [after] = await sql<{ status: string }[]>`SELECT status FROM hosts WHERE id = ${agentId}`;
     expect(after?.status).toBe('offline');
+    // 断线后产生离线告警
+    await app.engine.idle();
+    const offline = await sql`SELECT 1 FROM alerts WHERE host_id = ${agentId} AND key LIKE 'host-offline:%' AND state = 'firing'`;
+    expect(offline).toHaveLength(1);
   });
 
   it('拒绝错误签名和过期时间戳', async () => {

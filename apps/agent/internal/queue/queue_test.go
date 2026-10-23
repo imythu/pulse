@@ -58,3 +58,16 @@ func TestDropsOldestWhenFull(t *testing.T) {
 		t.Fatalf("unexpected %d msgs", len(msgs))
 	}
 }
+
+func TestEvictionSparesLogs(t *testing.T) {
+	q, _ := Open(t.TempDir(), 200)
+	defer q.Close()
+	if _, err := q.Push(TypeLogs, func(seq int64) ([]byte, error) { return []byte(`{"logs":1}`), nil }); err != nil {
+		t.Fatal(err)
+	}
+	push(t, q, 30)
+	msgs, _ := q.Pending(0, 100)
+	if len(msgs) == 0 || msgs[0].Type != TypeLogs || msgs[len(msgs)-1].Seq != 31 {
+		t.Fatalf("最旧的日志消息应保留，实际 %+v", msgs[0])
+	}
+}

@@ -1,19 +1,22 @@
 import { Link, useNavigate } from '@tanstack/react-router';
 import { useQueryClient } from '@tanstack/react-query';
-import { Activity, LayoutDashboard, LogOut, Plus, Server } from 'lucide-react';
+import { Activity, FileWarning, LayoutDashboard, LogOut, Plus, Server, Settings, Siren } from 'lucide-react';
 import { useEffect, useState, type ReactNode } from 'react';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { formatRelative } from '@/lib/format';
 import { live, useLiveStatus } from '@/lib/live';
-import { useMe, useOverviewLiveSync } from '@/lib/queries';
+import { useMe, useOverview, useOverviewLiveSync } from '@/lib/queries';
 import GradientText from './bits/GradientText';
 import { EnrollDialog } from './EnrollDialog';
 import { Button, StatusDot } from './ui';
 
 const NAV = [
   { to: '/', label: '总览', icon: LayoutDashboard },
+  { to: '/incidents', label: 'Incident', icon: Siren },
   { to: '/hosts', label: '主机', icon: Server },
+  { to: '/logs', label: '日志指纹', icon: FileWarning },
+  { to: '/settings', label: '设置', icon: Settings },
 ] as const;
 
 /** 顶栏常驻实时连接状态，数据是否新鲜一眼可见（设计文档 8.4）。 */
@@ -49,6 +52,8 @@ export function AppShell({ children }: { children: ReactNode }) {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const [enrollOpen, setEnrollOpen] = useState(false);
+  const overview = useOverview();
+  const openIncidents = overview.data?.openIncidents ?? 0;
   useOverviewLiveSync();
 
   useEffect(() => {
@@ -82,6 +87,9 @@ export function AppShell({ children }: { children: ReactNode }) {
             >
               <Icon className="size-4" />
               {label}
+              {to === '/incidents' && openIncidents > 0 && (
+                <span className="num ml-auto rounded-full bg-crit/15 px-1.5 py-px text-[11px] font-medium text-crit">{openIncidents}</span>
+              )}
             </Link>
           ))}
         </nav>
