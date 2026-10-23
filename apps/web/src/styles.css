@@ -1,0 +1,79 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* 设计 token：品牌色与状态色严格分开（设计文档 8.4 颜色语义固定） */
+@theme {
+  --font-sans: 'Inter', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SFMono-Regular', ui-monospace, monospace;
+
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-line: var(--line);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-brand: var(--brand);
+  --color-brand-2: var(--brand-2);
+
+  --color-ok: #22c55e;
+  --color-warn: #eab308;
+  --color-crit: #ef4444;
+  --color-off: #6b7280;
+}
+
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --surface-2: #f0f2f5;
+  --line: rgba(15, 23, 42, 0.1);
+  --ink: #0f172a;
+  --muted: #5b6475;
+  --faint: #8b93a7;
+  --brand: #0d9488;
+  --brand-2: #6366f1;
+}
+
+.dark {
+  --bg: #07090d;
+  --surface: #0d1016;
+  --surface-2: #131722;
+  --line: rgba(255, 255, 255, 0.08);
+  --ink: #e7e9ef;
+  --muted: #9aa3b5;
+  --faint: #626b7e;
+  --brand: #5eead4;
+  --brand-2: #818cf8;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: 'tnum' 1;
+}
+
+::selection {
+  background: color-mix(in oklab, var(--brand) 35%, transparent);
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

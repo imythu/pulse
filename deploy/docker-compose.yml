@@ -1,0 +1,45 @@
+services:
+  pulse:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgres://pulse:${POSTGRES_PASSWORD:-pulse}@postgres:5432/pulse
+      # 改成 Agent 能访问到的地址，安装命令会用它
+      PULSE_PUBLIC_URL: ${PULSE_PUBLIC_URL:-http://localhost:8080}
+    volumes:
+      - pulse-repos:/var/lib/pulse/repos
+      - pulse-gh:/root/.config/gh
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: timescale/timescaledb:2.22.1-pg16
+    environment:
+      POSTGRES_USER: pulse
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pulse}
+      POSTGRES_DB: pulse
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pulse"]
+      interval: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # Redis 在 M2（指纹计数、Alert 状态、BullMQ 队列）启用
+  redis:
+    image: redis:7.4-alpine
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+volumes:
+  pg-data:
+  redis-data:
+  pulse-repos:
+  pulse-gh:

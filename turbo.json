@@ -1,0 +1,9 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "tasks": {
+    "build": { "dependsOn": ["^build"], "outputs": ["dist/**"] },
+    "typecheck": { "dependsOn": ["^typecheck"] },
+    "test": { "passThroughEnv": ["TEST_DATABASE_URL", "NO_PROXY", "no_proxy"] },
+    "dev": { "cache": false, "persistent": true }
+  }
+}

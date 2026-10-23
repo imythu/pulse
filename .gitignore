@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.turbo/
+*.log
+.env
+.env.local
+apps/agent/bin/
+coverage/

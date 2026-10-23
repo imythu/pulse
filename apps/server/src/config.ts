@@ -1,0 +1,24 @@
+import { z } from 'zod';
+
+const Env = z.object({
+  DATABASE_URL: z.string().url(),
+  PORT: z.coerce.number().int().default(8080),
+  HOST: z.string().default('0.0.0.0'),
+  PULSE_PUBLIC_URL: z.string().url().default('http://localhost:8080'),
+  PULSE_AGENT_DIST: z.string().optional(),
+  PULSE_WEB_DIST: z.string().optional(),
+  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
+  /** 连续多少秒没有收到 Agent 任何消息就判定离线（3 次心跳） */
+  PULSE_OFFLINE_AFTER_SECONDS: z.coerce.number().int().default(45),
+});
+
+export type Config = z.infer<typeof Env>;
+
+export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
+  const parsed = Env.safeParse(env);
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('\n  ');
+    throw new Error(`配置错误：\n  ${issues}`);
+  }
+  return parsed.data;
+}
