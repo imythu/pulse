@@ -9,8 +9,11 @@ services:
       DATABASE_URL: postgres://pulse:${POSTGRES_PASSWORD:-pulse}@postgres:5432/pulse
       # 改成 Agent 能访问到的地址，安装命令会用它
       PULSE_PUBLIC_URL: ${PULSE_PUBLIC_URL:-http://localhost:8080}
+      # 可选：Fine-grained PAT（Contents、Metadata 只读），不设置时用 gh auth login 登录
+      GH_TOKEN: ${GH_TOKEN:-}
     volumes:
-      - pulse-repos:/var/lib/pulse/repos
+      # 签名密钥、仓库克隆、分析工作区；删除这个卷会让已注册的 Agent 无法验证新指令
+      - pulse-data:/var/lib/pulse
       - pulse-gh:/root/.config/gh
     depends_on:
       postgres:
@@ -31,15 +34,7 @@ services:
       retries: 20
     restart: unless-stopped
 
-  # Redis 在 M2（指纹计数、Alert 状态、BullMQ 队列）启用
-  redis:
-    image: redis:7.4-alpine
-    volumes:
-      - redis-data:/data
-    restart: unless-stopped
-
 volumes:
   pg-data:
-  redis-data:
-  pulse-repos:
+  pulse-data:
   pulse-gh:

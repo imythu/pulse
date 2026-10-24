@@ -1,10 +1,11 @@
-# 一个镜像包含：后端、前端构建产物、各架构的 Agent 二进制（供 /install.sh 下载）
+# 一个镜像包含：后端、前端构建产物、Linux amd64 的 Agent 二进制（供 /install.sh 下载）
 FROM golang:1.27 AS agent
 WORKDIR /src/apps/agent
 COPY apps/agent/go.mod apps/agent/go.sum ./
 RUN go mod download
 COPY apps/agent ./
 COPY packages/shared/fingerprint /src/packages/shared/fingerprint
+COPY packages/shared/commands /src/packages/shared/commands
 RUN make build VERSION=$(date +%Y.%m.%d)
 
 FROM node:22-bookworm AS build
@@ -32,6 +33,6 @@ COPY apps/server/migrations ./migrations
 COPY deploy/install.sh ./deploy/install.sh
 COPY --from=build /src/apps/web/dist ./web
 COPY --from=agent /src/apps/agent/bin ./agent
-ENV NODE_ENV=production PORT=8080 PULSE_WEB_DIST=/app/web PULSE_AGENT_DIST=/app/agent
+ENV NODE_ENV=production PORT=8080 PULSE_WEB_DIST=/app/web PULSE_AGENT_DIST=/app/agent PULSE_DATA_DIR=/var/lib/pulse
 EXPOSE 8080
 CMD ["node", "dist/main.js"]

@@ -5,7 +5,7 @@ import { unauthorized } from '../../lib/http-error.js';
 import type { LiveBus } from '../../lib/live.js';
 import { SESSION_COOKIE, userFromSession } from '../auth/index.js';
 
-const CHANNEL_RE = /^(overview|host:[0-9a-f-]{36})$/;
+const CHANNEL_RE = /^(overview|(host|command):[0-9a-f-]{36})$/;
 const MAX_CHANNELS = 20;
 
 /** 控制台实时推送：客户端按频道订阅，服务器只推变更（设计文档 9.4）。 */

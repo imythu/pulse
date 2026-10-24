@@ -1,6 +1,6 @@
 # Pulse 详细设计文档
 
-> 2026-10-23 · 在线协作版本：https://claude.ai/artifact/UyBLWUuC5MSBAv826yXHo2
+> 2026-10-23 初稿，2026-10-24 按已确认的范围修订：第一版只支持 Linux amd64，按几十台主机规模、单进程服务端设计。
 
 ## 1. 概述
 
@@ -48,7 +48,7 @@ flowchart LR
     API[api<br/>REST · 实时推送]
     RP[repos<br/>gh · worktree]
     AN --> RP
-    DB[(PostgreSQL + TimescaleDB · Redis + BullMQ)]
+    DB[(PostgreSQL + TimescaleDB)]
   end
   A -- 上报 --> GW
   GW -- 指令 --> A
@@ -201,7 +201,7 @@ CPU、内存等指标每 10 秒一个点，不能每个超阈值的点都变成�
 | resolved | 30 分钟内再次触发 | firing（重开原 Alert，计入一次抖动） |
 | 任意 | 1 小时内抖动 ≥ 3 次 | flapping，暂停通知 1 小时，在 Incident 中提示“阈值可能不合理” |
 
-状态机在单个进程中经同一个串行队列处理，避免并发上报产生竞态；拆分多进程时改为按 Alert 键加 Redis 锁。实现细节：
+状态机在单个进程中经同一个串行队列处理，避免并发上报产生竞态。实现细节：
 
 - pending 只保存在内存中（回落即丢弃，不留记录），服务器重启后重新计时。
 - flapping 不是单独的状态，而是 `flapping_until` 时间戳：抖动期间告警照常 firing / resolved，只是不发通知。
@@ -223,7 +223,7 @@ CPU、内存等指标每 10 秒一个点，不能每个超阈值的点都变成�
 
 ## 5. 后端设计
 
-后端是一个 Node.js 22（≥ 22.15，需要内置 zstd）+ TypeScript 服务，按“接入 → 去重 → 告警 → 分析”的事件管线组织，用 Redis 队列解耦各阶段。同一份代码可以一个进程跑全部角色（小规模），也可以按角色拆成多个进程水平扩展。
+后端是一个 Node.js 22（≥ 22.15，需要内置 zstd）+ TypeScript 服务，按“接入 → 去重 → 告警 → 分析”的事件管线组织。目标规模是几十台主机，所有阶段跑在一个进程里，用进程内队列和事件总线衔接，不依赖 Redis；500 Agent 压测下单进程仍有充足余量（见 [loadtest.md](loadtest.md)）。
 
 ### 5.1 技术选型
 
@@ -233,10 +233,9 @@ CPU、内存等指标每 10 秒一个点，不能每个超阈值的点都变成�
 | 接口契约 | Zod，前后端与 Agent 协议共享 `packages/shared` | 一处定义，类型和运行时校验同源 |
 | 关系数据 | PostgreSQL 16 + postgres.js，手写 SQL 迁移 | TimescaleDB 的超表、连续聚合、压缩策略都要写原生 SQL，ORM 帮不上忙；查询类型由 `packages/shared` 的接口约束 |
 | 时序指标 | TimescaleDB 扩展（hypertable + 连续聚合 + 压缩） | 不引入第二个数据库，SQL 直接查 |
-| 缓存 / 计数 / 锁 | Redis 7（拆分多进程时引入） | 指纹计数、Alert 锁、Agent 在线表。单进程部署时用进程内串行队列 + PostgreSQL，M2 未使用 Redis |
-| 队列 | BullMQ（M4 引入） | 重试、延迟任务（60 秒汇集窗口）、并发控制 |
+| 队列 / 计数 / 锁 | 进程内实现 + PostgreSQL | 串行队列、延迟任务（60 秒汇集窗口）、并发控制在进程内完成，需要持久化的状态落 PostgreSQL；不引入 Redis |
 | 日志 | pino | 结构化日志，低开销 |
-| 测试 | Vitest + Testcontainers | 管线和状态机用真实 PG / Redis 测 |
+| 测试 | Vitest + Testcontainers | 管线和状态机用真实 PostgreSQL 测 |
 
 ### 5.2 模块划分
 
@@ -263,7 +262,7 @@ CPU、内存等指标每 10 秒一个点，不能每个超阈值的点都变成�
 3. `dedup` 消费 `logs`：更新 LogGroup；命中 4.1 的触发条件就发出 `signal`。
 4. `rules` 定时评估指标，发出 `signal`。
 5. `alerting` 按 Alert 键串行消费 `signal`，推进状态机；进入 firing 时合并到 Incident，并投递一个延迟 60 秒的 `analyze` 任务（任务 ID = incident_id，重复投递自动合并）。
-6. `analysis` 消费 `analyze`，全局并发默认 2；分析过程中的每一步通过 Redis Pub/Sub 推给前端。
+6. `analysis` 消费 `analyze`，全局并发默认 2；分析过程中的每一步通过进程内事件总线推给前端。
 7. 每个阶段的状态变化都发布到 `live` 频道，`api` 的 WebSocket 转发给在线的控制台。
 
 ### 5.4 存储与保留
@@ -779,14 +778,14 @@ bearer_token_env_var = "PULSE_TOKEN"
 
 ## 12. 部署、目录结构与里程碑
 
-服务器用 Docker Compose 一键部署（pulse-server、postgres + timescaledb、redis 三个容器），代码是一个 pnpm + Turborepo 的 monorepo，分四个里程碑交付。
+服务器用 Docker Compose 一键部署（pulse-server、postgres + timescaledb 两个容器），代码是一个 pnpm + Turborepo 的 monorepo，分四个里程碑交付。
 
 ### 12.1 部署
 
 - `docker compose up -d` 启动后访问 `https://<host>`，首次打开进入初始化向导：创建 admin → 配置 AI Provider → 安装第一个 Agent → 配置 gh 与仓库。
 - pulse-server 镜像内置 `gh`、`git`、Claude Agent SDK 和 Codex SDK 所需的运行时；仓库目录 `/var/lib/pulse/repos` 和 gh 配置目录挂载为数据卷，重建容器不丢登录状态。
 - 前端构建产物由 pulse-server 静态托管，同源部署，省去 CORS。
-- 规模变大后用环境变量 `PULSE_ROLES=gateway,api` / `PULSE_ROLES=worker` 拆分进程。
+- 指令签名密钥保存在 `/var/lib/pulse/signing.key`，与数据卷一起备份。
 
 ### 12.2 目录结构
 
@@ -814,15 +813,16 @@ pulse/
 
 ### 12.3 里程碑
 
-1. **M1 采集与展示**：Agent 注册、指标采集与上报、主机列表与详情页、登录与总览页（含 React Bits 视觉）。验收：5 分钟内装好 Agent 并看到实时曲线。
-2. **M2 告警与去重**：日志采集与指纹、规则引擎、Alert 状态机、Incident 合并、通知。验收：用压测脚本打出 10 万条同类报错 + 30 分钟 CPU 满载，只产生 1 个 Incident；500 Agent 模拟负载下服务器稳定。
-3. **M3 指令与仓库**：指令模板、签名下发、审批、指令终端；gh 引导向导、仓库同步、服务版本关联。验收：未签名或过期指令被 Agent 拒绝；从零完成 gh 配置不超过 3 分钟。
+1. **M1 采集与展示**（已完成）：Agent 注册、指标采集与上报、主机列表与详情页、登录与总览页（含 React Bits 视觉）。验收：5 分钟内装好 Agent 并看到实时曲线。
+2. **M2 告警与去重**（已完成）：日志采集与指纹、规则引擎、Alert 状态机、Incident 合并、通知。验收：用压测脚本打出 10 万条同类报错 + 30 分钟 CPU 满载，只产生 1 个 Incident；500 Agent 模拟负载下服务器稳定。结果见 [loadtest.md](loadtest.md)。
+3. **M3 指令与仓库**（已完成）：指令模板、签名下发、审批、指令终端；gh 引导向导、仓库同步、服务版本关联。验收：未签名或过期指令被 Agent 拒绝；从零完成 gh 配置不超过 3 分钟。自定义指令在 Agent 本机配置中登记（`commands.custom`），连接时上报给服务器，服务器无法向 Agent 新增可执行命令。
 4. **M4 AI 分析**：Provider 抽象、Claude 与 Codex 适配、Pulse MCP 工具、报告页与分析回放、成本控制。验收：用 5 个预置故障场景（内存泄漏、磁盘写满、数据库连接池耗尽、发版引入的空指针、依赖服务超时）评估，每个场景的报告都指向正确的根因和代码位置。
 5. **M5 自定义脚本与对外 MCP**：goja 运行时与 SDK、编译与类型检查、风险分级与审批、灰度与回滚、对外 MCP 与个人令牌、控制台脚本页。验收：在 Claude Code 和 Codex 中各用一句话完成 11.8 的示例；死循环、内存暴涨、越权访问三类恶意脚本均被中断或拒绝，且不影响 Agent 心跳。
 
 ### 12.4 待确认问题
 
 - [x] 通知渠道：M2 已实现飞书、企业微信、钉钉、Slack 和通用 Webhook（带 HMAC 签名）。
-- [ ] 是否需要支持 Windows 主机和 macOS 主机？本文按 Linux 设计。
-- [ ] 预计的主机规模和每日 AI 分析预算是多少？
-- [ ] 低风险脚本允许 operator 自审是否合适，还是所有脚本都要 admin 审批？
+- [x] 平台：第一版只支持 Linux amd64，暂不支持 Windows、macOS 和 arm64。
+- [x] 规模：几十台主机，单进程 TypeScript 服务端，不引入 Redis / BullMQ。
+- [x] 脚本审批：脚本由用户自己编写，低风险脚本允许 operator 自审；Agent 只提供通用的只读能力，脚本组合这些能力实现各类自定义监控。
+- [ ] 每日 AI 分析预算（M4 中提供可配置的上限）。

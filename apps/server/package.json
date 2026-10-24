@@ -1,6 +1,7 @@
 {
   "name": "@pulse/server",
   "version": "0.1.0",
+  "license": "AGPL-3.0-only",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,7 +10,9 @@
     "start": "node dist/main.js",
     "migrate": "tsx --env-file-if-exists=.env src/db/migrate-cli.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "loadtest:sim": "tsx loadtest/sim.ts",
+    "loadtest:storm": "tsx loadtest/storm.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.0",

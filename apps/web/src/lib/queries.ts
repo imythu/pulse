@@ -1,5 +1,13 @@
 import type {
   AlertInfo,
+  AvailableRepo,
+  CommandInfo,
+  CommitInfo,
+  DeployInfo,
+  GhStatus,
+  HostCommandTemplates,
+  RepoInfo,
+  ServiceInfo,
   HostDetail,
   HostSummary,
   IncidentDetail,
@@ -41,7 +49,19 @@ export const keys = {
   logGroup: (id: string) => ['log-group', id] as const,
   rules: ['rules'] as const,
   channels: ['channels'] as const,
+  commandTemplates: (hostId: string) => ['command-templates', hostId] as const,
+  commands: (filter: CommandFilter, hostId?: string) => ['commands', filter, hostId ?? ''] as const,
+  command: (id: string) => ['command', id] as const,
+  ghStatus: ['gh-status'] as const,
+  ghOwners: ['gh-owners'] as const,
+  availableRepos: (owner: string) => ['available-repos', owner] as const,
+  repos: ['repos'] as const,
+  repoCommits: (id: string) => ['repo-commits', id] as const,
+  services: ['services'] as const,
+  deploys: (service: string) => ['deploys', service] as const,
 };
+
+export type CommandFilter = 'pending_approval' | 'active' | 'all';
 
 export const useMe = () => useQuery({ queryKey: keys.me, queryFn: () => api.get<Me>('/api/v1/me'), retry: false, staleTime: 60_000 });
 
@@ -117,6 +137,64 @@ export const useChannels = (enabled = true) =>
     enabled,
   });
 
+export const useCommandTemplates = (hostId: string) =>
+  useQuery({ queryKey: keys.commandTemplates(hostId), queryFn: () => api.get<HostCommandTemplates>(`/api/v1/hosts/${hostId}/command-templates`), staleTime: 60_000 });
+
+export const useCommands = (filter: CommandFilter, hostId?: string, limit = 50) =>
+  useInfiniteQuery({
+    queryKey: [...keys.commands(filter, hostId), limit],
+    queryFn: ({ pageParam }) =>
+      api.get<Page<CommandInfo>>(`/api/v1/commands?status=${filter}&limit=${limit}${hostId ? `&hostId=${hostId}` : ''}${pageParam ? `&cursor=${pageParam}` : ''}`),
+    initialPageParam: 0,
+    getNextPageParam: (last) => last.nextCursor ?? undefined,
+  });
+
+/** 指令详情：状态变化和输出分片由实时推送直接写进缓存。 */
+export function useCommand(id: string | null) {
+  const qc = useQueryClient();
+  useLive(id ? `command:${id}` : null, (e) => {
+    if (!id) return;
+    if (e.type === 'command.changed') qc.setQueryData(keys.command(id), e.command);
+    else if (e.type === 'command.output') {
+      qc.setQueryData<CommandInfo>(keys.command(id), (c) => (c && !c.finishedAt ? { ...c, output: (c.output ?? '') + e.data } : c));
+    }
+  });
+  return useQuery({ queryKey: keys.command(id ?? ''), queryFn: () => api.get<CommandInfo>(`/api/v1/commands/${id}`), enabled: !!id });
+}
+
+export const useGhStatus = () => useQuery({ queryKey: keys.ghStatus, queryFn: () => api.get<GhStatus>('/api/v1/repos/gh-status'), staleTime: 30_000 });
+
+export const useGhOwners = (enabled: boolean) =>
+  useQuery({ queryKey: keys.ghOwners, queryFn: async () => (await api.get<{ items: string[] }>('/api/v1/repos/owners')).items, enabled, retry: false });
+
+export const useAvailableRepos = (owner: string | null) =>
+  useQuery({
+    queryKey: keys.availableRepos(owner ?? ''),
+    queryFn: async () => (await api.get<{ items: AvailableRepo[] }>(`/api/v1/repos/available?owner=${encodeURIComponent(owner!)}`)).items,
+    enabled: !!owner,
+    retry: false,
+  });
+
+export const useRepos = () =>
+  useQuery({
+    queryKey: keys.repos,
+    queryFn: async () => (await api.get<{ items: RepoInfo[] }>('/api/v1/repos')).items,
+    // 克隆中时轮询，克隆完成后放慢
+    refetchInterval: (q) => (q.state.data?.some((r) => r.status === 'cloning') ? 2000 : 60_000),
+  });
+
+export const useRepoCommits = (id: string | null) =>
+  useQuery({ queryKey: keys.repoCommits(id ?? ''), queryFn: async () => (await api.get<{ items: CommitInfo[] }>(`/api/v1/repos/${id}/commits`)).items, enabled: !!id });
+
+export const useServices = () => useQuery({ queryKey: keys.services, queryFn: async () => (await api.get<{ items: ServiceInfo[] }>('/api/v1/services')).items });
+
+export const useDeploys = (service: string | null) =>
+  useQuery({
+    queryKey: keys.deploys(service ?? ''),
+    queryFn: async () => (await api.get<{ items: DeployInfo[] }>(`/api/v1/services/${encodeURIComponent(service!)}/deploys`)).items,
+    enabled: !!service,
+  });
+
 function upsertHost(qc: QueryClient, host: HostSummary) {
   qc.setQueryData<HostSummary[]>(keys.hosts, (list) => {
     if (!list) return list;
@@ -150,6 +228,9 @@ export function useOverviewLiveSync() {
       void qc.invalidateQueries({ queryKey: keys.incident(e.incident.id) });
       void qc.invalidateQueries({ queryKey: keys.incident(String(e.incident.no)) });
       void qc.invalidateQueries({ queryKey: keys.overview });
+    } else if (e.type === 'command.changed' && 'pendingApprovals' in e) {
+      qc.setQueryData<OverviewStats>(keys.overview, (o) => (o ? { ...o, pendingApprovals: e.pendingApprovals } : o));
+      void qc.invalidateQueries({ queryKey: ['commands'] });
     }
   });
   // 实时连接断开又恢复后，断线期间可能错过事件，全量重拉一次

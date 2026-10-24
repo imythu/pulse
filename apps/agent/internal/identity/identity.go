@@ -21,6 +21,8 @@ type Identity struct {
 	AgentID    string             `json:"agentId"`
 	Server     string             `json:"server"`
 	PrivateKey ed25519.PrivateKey `json:"privateKey"`
+	// 服务器的指令签名公钥，注册时保存；M3 之前注册的 Agent 没有，启动时补取
+	SigningPublicKey ed25519.PublicKey `json:"signingPublicKey,omitempty"`
 }
 
 var ErrNotEnrolled = errors.New("尚未注册，请先运行 pulse-agent enroll")

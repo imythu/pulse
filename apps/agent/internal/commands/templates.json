@@ -1,0 +1,91 @@
+{
+  "version": 1,
+  "templates": [
+    {
+      "name": "proc.top",
+      "description": "当前资源占用最高的进程及其命令行",
+      "risk": "read",
+      "timeoutSeconds": 15,
+      "params": [
+        { "name": "by", "label": "排序", "type": "enum", "options": ["cpu", "mem"], "default": "cpu", "required": false },
+        { "name": "n", "label": "条数", "type": "int", "min": 1, "max": 50, "default": "15", "required": false }
+      ]
+    },
+    {
+      "name": "proc.inspect",
+      "description": "进程详情：状态、线程数、fd 数、内存与映射摘要",
+      "risk": "read",
+      "timeoutSeconds": 15,
+      "params": [{ "name": "pid", "label": "PID", "type": "int", "min": 1, "max": 4194304, "required": true }]
+    },
+    {
+      "name": "log.tail",
+      "description": "读取日志末尾 n 行。source 是 Agent 已配置的日志文件路径，或 journald:<unit>",
+      "risk": "read",
+      "timeoutSeconds": 20,
+      "params": [
+        { "name": "source", "label": "日志源", "type": "string", "pattern": "^(/[^\\x00]+|journald:[A-Za-z0-9@._:-]{1,128})$", "required": true, "hint": "/var/log/app/app.log 或 journald:nginx.service" },
+        { "name": "n", "label": "行数", "type": "int", "min": 1, "max": 2000, "default": "200", "required": false }
+      ]
+    },
+    {
+      "name": "log.grep",
+      "description": "在日志中按正则（RE2 语法）和时间范围检索，最多返回 500 行",
+      "risk": "read",
+      "timeoutSeconds": 30,
+      "params": [
+        { "name": "source", "label": "日志源", "type": "string", "pattern": "^(/[^\\x00]+|journald:[A-Za-z0-9@._:-]{1,128})$", "required": true, "hint": "/var/log/app/app.log 或 journald:nginx.service" },
+        { "name": "pattern", "label": "正则", "type": "string", "pattern": "^.{1,200}$", "required": true },
+        { "name": "since", "label": "时间范围", "type": "duration", "min": 60, "max": 604800, "default": "1h", "required": false, "hint": "如 15m、1h、24h" }
+      ]
+    },
+    {
+      "name": "net.conns",
+      "description": "TCP 连接统计：按状态计数、按远端地址聚合的前 20 名、监听端口",
+      "risk": "read",
+      "timeoutSeconds": 15,
+      "params": []
+    },
+    {
+      "name": "disk.usage",
+      "description": "目录大小排行（限定深度，最多耗时 25 秒）",
+      "risk": "read",
+      "timeoutSeconds": 30,
+      "params": [
+        { "name": "path", "label": "目录", "type": "string", "pattern": "^/[^\\x00]*$", "required": true },
+        { "name": "depth", "label": "深度", "type": "int", "min": 1, "max": 3, "default": "1", "required": false }
+      ]
+    },
+    {
+      "name": "svc.status",
+      "description": "systemd 服务状态",
+      "risk": "read",
+      "timeoutSeconds": 15,
+      "params": [{ "name": "unit", "label": "Unit", "type": "string", "pattern": "^[A-Za-z0-9@._:-]{1,128}$", "required": true }]
+    },
+    {
+      "name": "docker.ps",
+      "description": "容器列表",
+      "risk": "read",
+      "timeoutSeconds": 15,
+      "params": []
+    },
+    {
+      "name": "docker.logs",
+      "description": "容器日志末尾 n 行",
+      "risk": "read",
+      "timeoutSeconds": 20,
+      "params": [
+        { "name": "id", "label": "容器", "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$", "required": true },
+        { "name": "n", "label": "行数", "type": "int", "min": 1, "max": 2000, "default": "200", "required": false }
+      ]
+    },
+    {
+      "name": "svc.restart",
+      "description": "重启 systemd 服务。写操作，需要审批，且 Agent 本地 commands.allow 中显式允许",
+      "risk": "write",
+      "timeoutSeconds": 60,
+      "params": [{ "name": "unit", "label": "Unit", "type": "string", "pattern": "^[A-Za-z0-9@._:-]{1,128}$", "required": true }]
+    }
+  ]
+}

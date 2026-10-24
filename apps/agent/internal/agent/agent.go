@@ -16,6 +16,7 @@ import (
 
 	"pulse/agent/internal/aggregate"
 	"pulse/agent/internal/collect"
+	"pulse/agent/internal/commands"
 	"pulse/agent/internal/config"
 	"pulse/agent/internal/identity"
 	"pulse/agent/internal/logs"
@@ -44,7 +45,19 @@ type Agent struct {
 	remote atomic.Pointer[protocol.Config]
 	notify chan struct{}
 	self   *process.Process
+
+	runner *commands.Runner
+	// 当前连接，指令的状态和输出分片直接走它（不进本地队列）
+	conn atomic.Pointer[transport.Conn]
+	// 指令在 Agent 生命周期的 context 里执行，连接断开不会中断
+	runCtx context.Context
+
+	versionsMu sync.Mutex
+	versions   []protocol.ServiceVersion
+	versionsAt time.Time
 }
+
+const versionsTTL = time.Minute
 
 func New(cfg *config.Config, version string, log *slog.Logger) (*Agent, error) {
 	id, err := identity.Load(cfg.DataDir)
@@ -62,11 +75,63 @@ func New(cfg *config.Config, version string, log *slog.Logger) (*Agent, error) {
 	def := protocol.DefaultConfig
 	a.remote.Store(&def)
 	a.self, _ = process.NewProcess(int32(os.Getpid()))
+
+	opts := commands.Options{Allow: cfg.Commands.Allow, Journald: cfg.Logs.Journald.IsEnabled()}
+	for _, f := range cfg.Logs.Files {
+		opts.LogGlobs = append(opts.LogGlobs, f.Paths...)
+	}
+	opts.LogGlobs = append(opts.LogGlobs, cfg.Commands.LogPaths...)
+	for _, c := range cfg.Commands.Custom {
+		opts.Custom = append(opts.Custom, commands.Custom{
+			Template: protocol.CommandTemplate{Name: "custom." + c.Name, Description: c.Description, Risk: c.Risk, TimeoutSeconds: c.TimeoutSeconds, Params: c.Params},
+			Exec:     c.Exec,
+		})
+	}
+	var pub []byte
+	if cfg.Commands.IsEnabled() {
+		k, err := signingKey(context.Background(), cfg, id, log)
+		if err != nil {
+			log.Warn("拿不到服务器的指令签名公钥，所有指令都会被拒绝", "err", err)
+		}
+		pub = k
+	}
+	a.runner = commands.NewRunner(commands.NewVerifier(pub, id.AgentID, cfg.DataDir), opts, cmdSender{a}, log)
 	return a, nil
+}
+
+// cmdSender 把指令状态交给连接层：状态和输出分片尽力送达，结果写本地队列可靠送达。
+type cmdSender struct{ a *Agent }
+
+func (s cmdSender) direct(typ string, payload any) {
+	if c := s.a.conn.Load(); c != nil {
+		_ = c.Send(s.a.runCtx, protocol.Envelope[any]{Type: typ, Ts: time.Now().UnixMilli(), Payload: payload})
+	}
+}
+
+func (s cmdSender) Status(id string) {
+	s.direct(protocol.TypeCmdStatus, protocol.CmdStatusPayload{ID: id, Status: "running"})
+}
+
+func (s cmdSender) Output(id, data string) {
+	s.direct(protocol.TypeCmdOutput, protocol.CmdOutputPayload{ID: id, Data: data})
+}
+
+func (s cmdSender) Done(p protocol.CmdDonePayload) { s.a.enqueue(protocol.TypeCmdDone, p) }
+
+// serviceVersions 读取服务当前版本，一分钟内复用上次结果。
+func (a *Agent) serviceVersions(ctx context.Context) []protocol.ServiceVersion {
+	a.versionsMu.Lock()
+	defer a.versionsMu.Unlock()
+	if time.Since(a.versionsAt) > versionsTTL {
+		a.versions = collect.ServiceVersions(ctx, a.cfg.Services)
+		a.versionsAt = time.Now()
+	}
+	return a.versions
 }
 
 func (a *Agent) Run(ctx context.Context) error {
 	defer a.q.Close()
+	a.runCtx = ctx
 	var wg sync.WaitGroup
 	wg.Add(3)
 	go func() { defer wg.Done(); a.collectLoop(ctx) }()
@@ -222,8 +287,13 @@ func (a *Agent) session(ctx context.Context) error {
 	defer conn.Close("bye")
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	a.conn.Store(conn)
+	defer a.conn.CompareAndSwap(conn, nil)
 
-	hello := protocol.HelloPayload{Protocol: protocol.Version, AgentVersion: a.version, Host: collect.HostInfo(ctx, a.cfg.Labels)}
+	hello := protocol.HelloPayload{
+		Protocol: protocol.Version, AgentVersion: a.version, Host: collect.HostInfo(ctx, a.cfg.Labels),
+		Commands: a.runner.Templates(), Versions: a.serviceVersions(ctx),
+	}
 	if err := conn.Send(ctx, protocol.Envelope[protocol.HelloPayload]{Type: protocol.TypeHello, Ts: time.Now().UnixMilli(), Payload: hello}); err != nil {
 		return err
 	}
@@ -258,7 +328,7 @@ func (a *Agent) session(ctx context.Context) error {
 		case <-acked:
 		case <-heartbeat.C:
 			if err := conn.Send(ctx, protocol.Envelope[protocol.HeartbeatPayload]{
-				Type: protocol.TypeHeartbeat, Ts: time.Now().UnixMilli(), Payload: a.heartbeat(),
+				Type: protocol.TypeHeartbeat, Ts: time.Now().UnixMilli(), Payload: a.heartbeat(ctx),
 			}); err != nil {
 				return err
 			}
@@ -305,6 +375,20 @@ func (a *Agent) readLoop(ctx context.Context, conn *transport.Conn, acked chan<-
 				default:
 				}
 			}
+		case protocol.TypeCmdRun:
+			var p protocol.CmdRunPayload
+			if json.Unmarshal(msg.Payload, &p) == nil {
+				if !a.cfg.Commands.IsEnabled() {
+					a.runner.Reject(p, "本机已关闭指令执行（commands.enabled: false）")
+				} else {
+					a.runner.Handle(a.runCtx, p)
+				}
+			}
+		case protocol.TypeCmdCancel:
+			var p protocol.CmdCancelPayload
+			if json.Unmarshal(msg.Payload, &p) == nil {
+				a.runner.Cancel(p.ID)
+			}
 		case protocol.TypeConfig:
 			var c protocol.Config
 			if json.Unmarshal(msg.Payload, &c) == nil && c.SampleIntervalSeconds > 0 && c.WindowSeconds > 0 {
@@ -314,8 +398,8 @@ func (a *Agent) readLoop(ctx context.Context, conn *transport.Conn, acked chan<-
 	}
 }
 
-func (a *Agent) heartbeat() protocol.HeartbeatPayload {
-	hb := protocol.HeartbeatPayload{QueueDepth: a.q.Depth(), UptimeSeconds: time.Since(a.started).Seconds()}
+func (a *Agent) heartbeat(ctx context.Context) protocol.HeartbeatPayload {
+	hb := protocol.HeartbeatPayload{QueueDepth: a.q.Depth(), UptimeSeconds: time.Since(a.started).Seconds(), Versions: a.serviceVersions(ctx)}
 	if a.self != nil {
 		if v, err := a.self.Percent(0); err == nil {
 			hb.CPUPct = v

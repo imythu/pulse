@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import cookie from '@fastify/cookie';
 import fastifyStatic from '@fastify/static';
@@ -9,15 +9,22 @@ import type { Config } from './config.js';
 import type { Sql } from './db/index.js';
 import { HttpError } from './lib/http-error.js';
 import { LiveBus } from './lib/live.js';
+import { Signer } from './lib/signing.js';
 import { AlertEngine, type EngineOptions } from './modules/alerting/engine.js';
 import { registerAlertingRoutes } from './modules/alerting/routes.js';
 import { registerAuth } from './modules/auth/index.js';
+import { registerCommandRoutes } from './modules/commands/routes.js';
+import { CommandService } from './modules/commands/service.js';
 import { registerEnroll } from './modules/enroll/index.js';
 import { Gateway } from './modules/gateway/index.js';
 import { registerHostRoutes } from './modules/hosts/routes.js';
 import { registerLive } from './modules/live/index.js';
 import { registerLogRoutes } from './modules/logs/routes.js';
 import { Notifier, registerNotifyRoutes, type NotifierOptions } from './modules/notify/index.js';
+import { Gh } from './modules/repos/gh.js';
+import { RepoManager } from './modules/repos/repos.js';
+import { registerRepoRoutes } from './modules/repos/routes.js';
+import { ServiceRegistry } from './modules/repos/services.js';
 
 export interface App {
   app: FastifyInstance;
@@ -25,6 +32,10 @@ export interface App {
   live: LiveBus;
   engine: AlertEngine;
   notifier: Notifier;
+  signer: Signer;
+  commands: CommandService;
+  repos: RepoManager;
+  services: ServiceRegistry;
 }
 
 export interface BuildOptions {
@@ -68,20 +79,31 @@ export async function buildApp(config: Config, sql: Sql, opts: BuildOptions = {}
   const live = new LiveBus();
   const notifier = new Notifier(sql, app.log, { publicUrl, ...opts.notifier });
   const engine = new AlertEngine(sql, live, notifier, app.log, opts.engine);
-  const gateway = new Gateway(sql, live, app.log, engine, { offlineAfterSeconds: config.PULSE_OFFLINE_AFTER_SECONDS });
+  const signer = Signer.load({
+    envKey: config.PULSE_SIGNING_KEY,
+    file: config.PULSE_SIGNING_KEY_FILE ?? join(config.PULSE_DATA_DIR, 'signing.key'),
+  });
+  const commands = new CommandService(sql, live, app.log, signer);
+  const services = new ServiceRegistry(sql);
+  const gh = new Gh(config.PULSE_GH_BIN, config.PULSE_GIT_BIN);
+  const repos = new RepoManager(sql, gh, config.PULSE_GIT_BIN, join(resolve(config.PULSE_DATA_DIR), 'repos'), app.log);
+  const gateway = new Gateway(sql, live, app.log, engine, commands, services, { offlineAfterSeconds: config.PULSE_OFFLINE_AFTER_SECONDS });
 
   app.get('/healthz', async () => ({ ok: true }));
   registerAuth(app, sql, { secureCookies: config.PULSE_PUBLIC_URL.startsWith('https://') });
   registerEnroll(app, sql, live, {
     publicUrl,
+    signingPublicKey: signer.publicKey,
     agentDist: config.PULSE_AGENT_DIST ? resolve(config.PULSE_AGENT_DIST) : undefined,
     installScriptPath: findUp('deploy/install.sh'),
   });
   gateway.register(app);
-  registerHostRoutes(app, sql, gateway, engine);
+  registerHostRoutes(app, sql, gateway, engine, commands);
   registerAlertingRoutes(app, sql, engine);
   registerLogRoutes(app, sql, engine);
   registerNotifyRoutes(app, sql, notifier);
+  registerCommandRoutes(app, sql, commands);
+  registerRepoRoutes(app, sql, gh, repos, services);
   registerLive(app, sql, live);
 
   // 生产环境由后端同源托管前端，前端路由一律回退到 index.html
@@ -97,5 +119,5 @@ export async function buildApp(config: Config, sql: Sql, opts: BuildOptions = {}
     });
   }
 
-  return { app, gateway, live, engine, notifier };
+  return { app, gateway, live, engine, notifier, signer, commands, repos, services };
 }

@@ -1,6 +1,8 @@
 import { QueryClient } from '@tanstack/react-query';
 import { createRootRouteWithContext, createRoute, createRouter, Outlet, redirect } from '@tanstack/react-router';
 import { AppShell } from '@/components/AppShell';
+import { CommandDetailPage, CommandsPage } from '@/pages/Commands';
+import { ReposPage } from '@/pages/Repos';
 import { ApiError, api } from '@/lib/api';
 import { keys } from '@/lib/queries';
 import { HostDetailPage } from '@/pages/HostDetail';
@@ -74,12 +76,15 @@ const incidents = createRoute({ getParentRoute: () => app, path: '/incidents', c
 const incidentDetail = createRoute({ getParentRoute: () => app, path: '/incidents/$id', component: IncidentDetailPage });
 const logs = createRoute({ getParentRoute: () => app, path: '/logs', component: LogsPage });
 const logDetail = createRoute({ getParentRoute: () => app, path: '/logs/$id', component: LogGroupDetailPage });
+const commands = createRoute({ getParentRoute: () => app, path: '/commands', component: CommandsPage });
+const commandDetail = createRoute({ getParentRoute: () => app, path: '/commands/$id', component: CommandDetailPage });
+const repos = createRoute({ getParentRoute: () => app, path: '/repos', component: ReposPage });
 const settings = createRoute({ getParentRoute: () => app, path: '/settings', component: SettingsPage });
 
 const routeTree = root.addChildren([
   login,
   setup,
-  app.addChildren([overview, hosts, hostDetail, incidents, incidentDetail, logs, logDetail, settings]),
+  app.addChildren([overview, hosts, hostDetail, incidents, incidentDetail, logs, logDetail, commands, commandDetail, repos, settings]),
 ]);
 
 export function makeRouter(queryClient: QueryClient) {

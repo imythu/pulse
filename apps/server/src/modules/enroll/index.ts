@@ -10,10 +10,11 @@ import type { LiveBus } from '../../lib/live.js';
 import { audit, requireRole } from '../auth/index.js';
 import { toSummary, type HostRow } from '../hosts/repo.js';
 
-const AGENT_ARCHES = new Set(['amd64', 'arm64']);
+const AGENT_ARCHES = new Set(['amd64']);
 
 export interface EnrollOptions {
   publicUrl: string;
+  signingPublicKey: string;
   agentDist?: string;
   installScriptPath: string;
 }
@@ -62,8 +63,11 @@ export function registerEnroll(app: FastifyInstance, sql: Sql, live: LiveBus, op
 
     await audit(sql, `agent:${host.id}`, 'agent.enrolled', host.hostname, { ip: req.ip });
     live.publish({ channel: 'overview', type: 'host.enrolled', host: toSummary(host), at: Date.now() });
-    return { agentId: host.id };
+    return { agentId: host.id, signingPublicKey: opts.signingPublicKey };
   });
+
+  // M3 之前注册的 Agent 没有保存指令签名公钥，启动时从这里取一次（经 HTTPS 时可信）
+  app.get('/agent/signing-key', async () => ({ signingPublicKey: opts.signingPublicKey }));
 
   app.get('/install.sh', async (_req, reply) => {
     const script = await readFile(opts.installScriptPath, 'utf8');

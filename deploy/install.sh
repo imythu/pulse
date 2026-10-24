@@ -20,10 +20,10 @@ done
 [ "$(id -u)" -eq 0 ] || { echo "请用 root 运行（sudo）" >&2; exit 1; }
 command -v systemctl >/dev/null 2>&1 || { echo "需要 systemd" >&2; exit 1; }
 
+# 第一版只提供 Linux amd64 的 Agent
 case "$(uname -m)" in
   x86_64|amd64) ARCH=amd64 ;;
-  aarch64|arm64) ARCH=arm64 ;;
-  *) echo "不支持的架构：$(uname -m)" >&2; exit 1 ;;
+  *) echo "暂不支持的架构：$(uname -m)，目前只提供 Linux amd64" >&2; exit 1 ;;
 esac
 
 echo "==> 下载 pulse-agent ($ARCH)"
@@ -53,6 +53,14 @@ labels: {}
 #   journald:
 #     enabled: true
 #     units: []           # 为空表示全部
+# 服务当前部署的版本（用于 AI 分析读取对应提交的代码）
+# services:
+#   - name: order-api
+#     version_file: /opt/order-api/REVISION   # 或 container: order-api
+# 指令：默认允许全部只读模板，写操作需要显式列出
+# commands:
+#   allow: []
+#   log_paths: []         # log.tail / log.grep 额外允许读取的文件
 EOF
 fi
 

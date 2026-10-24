@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams } from '@tanstack/react-router';
 import { ArrowLeft, Trash2 } from 'lucide-react';
 import { useState } from 'react';
+import { CommandConsole } from '@/components/commands';
 import { AlertTags, alertValueText, incidentDuration, SeverityBadge, Sparkline } from '@/components/alerting';
 import { MetricChart, type ChartBand } from '@/components/MetricChart';
 import { Badge, Boundary, Button, Card, CardHeader, Dialog, EmptyState, ErrorNote, Skeleton, StatusDot } from '@/components/ui';
@@ -407,6 +408,13 @@ export function HostDetailPage() {
           }
         />
         <Boundary>{h?.procs ? <ProcsTable procs={h.procs[procTab]} /> : <EmptyState title="暂无进程快照" />}</Boundary>
+      </Card>
+
+      <Card>
+        <CardHeader title="指令终端" hint="只能选择指令模板并填写参数；写操作提交后需要管理员审批" />
+        <Boundary>
+          <CommandConsole hostId={id} offline={off} />
+        </Boundary>
       </Card>
 
       <Dialog open={confirmDelete} onClose={() => setConfirmDelete(false)} title="移除主机">

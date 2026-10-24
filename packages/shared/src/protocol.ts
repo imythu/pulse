@@ -1,6 +1,7 @@
 // Agent <-> Server 协议（设计文档 9.2）。
 // 每条消息都是一个信封 { type, seq, ts, payload }，WebSocket 二进制帧 = zstd(JSON)。
 import { z } from 'zod';
+import { CommandTemplate } from './commands.js';
 
 export const PROTOCOL_VERSION = 1;
 
@@ -44,10 +45,22 @@ export type HostInfo = z.infer<typeof HostInfo>;
 
 // ---------- Agent -> Server ----------
 
+/** Agent 读到的服务当前版本（设计文档 7.3），来自版本文件或容器镜像 label。 */
+export const ServiceVersion = z.object({
+  service: z.string().min(1).max(128),
+  commit: z.string().max(64),
+  /** file:<路径> / container:<名称> */
+  source: z.string().max(512),
+});
+export type ServiceVersion = z.infer<typeof ServiceVersion>;
+
 export const HelloPayload = z.object({
   protocol: z.number().int(),
   agentVersion: z.string(),
   host: HostInfo,
+  /** Agent 本地配置的自定义指令模板（custom.*） */
+  commands: z.array(CommandTemplate).max(50).nullish().transform((v) => v ?? []),
+  versions: z.array(ServiceVersion).max(50).nullish().transform((v) => v ?? []),
 });
 
 export const MetricsPayload = z.object({
@@ -71,6 +84,7 @@ export const HeartbeatPayload = z.object({
   uptimeSeconds: z.number().nonnegative(),
   cpuPct: z.number(),
   memPct: z.number(),
+  versions: z.array(ServiceVersion).max(50).nullish().transform((v) => v ?? []),
 });
 
 /** 一个日志指纹在 Agent 10 秒窗口内的汇总：首条完整样本 + 次数（设计文档 4.1）。 */
@@ -96,17 +110,38 @@ export const LogsPayload = z.object({
 });
 export type LogsPayload = z.infer<typeof LogsPayload>;
 
+/** 指令开始执行或被拒绝前的状态变化，尽力送达 */
+export const CmdStatusPayload = z.object({ id: z.string().uuid(), status: z.literal('running') });
+
+/** 指令输出分片，只用于实时展示；完整输出在 cmd.done 里 */
+export const CmdOutputPayload = z.object({ id: z.string().uuid(), data: z.string().max(256 * 1024) });
+
+export const CmdDonePayload = z.object({
+  id: z.string().uuid(),
+  status: z.enum(['succeeded', 'failed', 'timeout', 'rejected', 'canceled']),
+  exitCode: z.number().int().nullable(),
+  output: z.string().max(1024 * 1024 + 1024),
+  truncated: z.boolean(),
+  /** 拒绝或失败的原因 */
+  error: z.string().max(2000).default(''),
+  durationMs: z.number().nonnegative(),
+});
+export type CmdDonePayload = z.infer<typeof CmdDonePayload>;
+
 export const AgentMessage = z.discriminatedUnion('type', [
   z.object({ type: z.literal('hello'), seq: z.number().int(), ts: z.number(), payload: HelloPayload }),
   z.object({ type: z.literal('metrics'), seq: z.number().int(), ts: z.number(), payload: MetricsPayload }),
   z.object({ type: z.literal('procs'), seq: z.number().int(), ts: z.number(), payload: ProcsPayload }),
   z.object({ type: z.literal('heartbeat'), seq: z.number().int(), ts: z.number(), payload: HeartbeatPayload }),
   z.object({ type: z.literal('logs'), seq: z.number().int(), ts: z.number(), payload: LogsPayload }),
+  z.object({ type: z.literal('cmd.status'), seq: z.number().int(), ts: z.number(), payload: CmdStatusPayload }),
+  z.object({ type: z.literal('cmd.output'), seq: z.number().int(), ts: z.number(), payload: CmdOutputPayload }),
+  z.object({ type: z.literal('cmd.done'), seq: z.number().int(), ts: z.number(), payload: CmdDonePayload }),
 ]);
 export type AgentMessage = z.infer<typeof AgentMessage>;
 
 /** 需要可靠送达（落本地队列、按 seq 去重补传）的消息类型。hello / heartbeat 的 seq 为 0。 */
-export const RELIABLE_TYPES = new Set<AgentMessage['type']>(['metrics', 'procs', 'logs']);
+export const RELIABLE_TYPES = new Set<AgentMessage['type']>(['metrics', 'procs', 'logs', 'cmd.done']);
 
 // ---------- Server -> Agent ----------
 
@@ -128,9 +163,17 @@ export const DEFAULT_AGENT_CONFIG: AgentConfig = {
   earlyPush: { cpuPct: 90, memPct: 90, diskPct: 85 },
 };
 
+/** body 是 SignedCommand 的 JSON 文本，signature 是服务器指令密钥对 body 的 Ed25519 签名（base64） */
+export interface CmdRunPayload {
+  body: string;
+  signature: string;
+}
+
 export type ServerMessage =
   | { type: 'ack'; seq: number; ts: number; payload: { maxSeq: number } }
-  | { type: 'config'; seq: number; ts: number; payload: AgentConfig };
+  | { type: 'config'; seq: number; ts: number; payload: AgentConfig }
+  | { type: 'cmd.run'; seq: number; ts: number; payload: CmdRunPayload }
+  | { type: 'cmd.cancel'; seq: number; ts: number; payload: { id: string } };
 
 // ---------- 注册 ----------
 
@@ -145,6 +188,8 @@ export type EnrollRequest = z.infer<typeof EnrollRequest>;
 
 export const EnrollResponse = z.object({
   agentId: z.string(),
+  /** 服务器指令签名公钥（32 字节原始值的 base64），Agent 保存后用来验签指令和脚本 */
+  signingPublicKey: z.string(),
 });
 export type EnrollResponse = z.infer<typeof EnrollResponse>;
 

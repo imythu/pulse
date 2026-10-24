@@ -1,5 +1,6 @@
 {
   "name": "pulse",
+  "license": "AGPL-3.0-only",
   "private": true,
   "packageManager": "pnpm@12.15.0",
   "scripts": {

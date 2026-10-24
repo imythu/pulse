@@ -4,6 +4,7 @@ import type { Sql } from '../../db/index.js';
 import { badRequest, notFound } from '../../lib/http-error.js';
 import { audit, requireRole } from '../auth/index.js';
 import type { AlertEngine } from '../alerting/engine.js';
+import type { CommandService } from '../commands/service.js';
 import type { Gateway } from '../gateway/index.js';
 import { getHostRow, listHosts, toDetail } from './repo.js';
 
@@ -20,7 +21,7 @@ export function chooseStep(from: number, to: number): { stepSeconds: number; sou
   return { stepSeconds, source: range > 7 * DAY ? 'metrics_1h' : 'metrics' };
 }
 
-export function registerHostRoutes(app: FastifyInstance, sql: Sql, gateway: Gateway, engine: AlertEngine) {
+export function registerHostRoutes(app: FastifyInstance, sql: Sql, gateway: Gateway, engine: AlertEngine, commands: CommandService) {
   const viewer = { preHandler: requireRole(sql, 'viewer') };
 
   app.get('/api/v1/overview', viewer, async (): Promise<OverviewStats> => {
@@ -31,7 +32,14 @@ export function registerHostRoutes(app: FastifyInstance, sql: Sql, gateway: Gate
              avg((snapshot->>'memPct')::float) FILTER (WHERE status = 'online') AS mem,
              (SELECT count(*) FROM incidents WHERE status <> 'resolved')::int AS incidents
       FROM hosts`;
-    return { hostsTotal: row!.total, hostsOnline: row!.online, avgCpuPct: row!.cpu, avgMemPct: row!.mem, openIncidents: row!.incidents };
+    return {
+      hostsTotal: row!.total,
+      hostsOnline: row!.online,
+      avgCpuPct: row!.cpu,
+      avgMemPct: row!.mem,
+      openIncidents: row!.incidents,
+      pendingApprovals: await commands.pendingApprovals(),
+    };
   });
 
   app.get('/api/v1/hosts', viewer, async () => ({ items: await listHosts(sql) }));
